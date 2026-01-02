@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+
+:root {
+	--color-bg: #fafafa;
+	--color-bg-elevated: #ffffff;
+	--color-bg-hover: #f0f0f0;
+	--color-border: #e0e0e0;
+	--color-text: #1a1a1a;
+	--color-text-muted: #666;
+	--color-text-subtle: #999;
+	--color-accent: #000;
+	--color-error: #dc2626;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background-color: var(--color-bg);
+	color: var(--color-text);
+	font-family:
+		'Chicago',
+		'SF Pro Display',
+		-apple-system,
+		BlinkMacSystemFont,
+		'Segoe UI',
+		Roboto,
+		Oxygen,
+		Ubuntu,
+		sans-serif;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* Prevent text selection during drawing */
+.pixel-editor,
+.gallery-container {
+	-webkit-user-select: none;
+	user-select: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--color-bg);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--color-border);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: #ccc;
+}
+
+/* Focus visible styles */
+:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+}
+
+button:focus-visible {
+	outline: 2px solid var(--color-accent);
+	outline-offset: 2px;
+}
+
+/* Smooth transitions */
+a,
+button {
+	transition:
+		color 0.15s ease,
+		background-color 0.15s ease,
+		border-color 0.15s ease,
+		transform 0.15s ease;
+}
