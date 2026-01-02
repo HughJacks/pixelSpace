@@ -1,8 +1,24 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import type { Drawing, DrawingWithPosition, UMAPWorkerMessage, UMAPWorkerResponse } from '$lib/types';
+	import type { Drawing, DrawingWithPosition, TSNEWorkerMessage, TSNEWorkerResponse } from '$lib/types';
 	import { GRID_SIZE } from '$lib/palette';
 	import DrawingPopup from './DrawingPopup.svelte';
+
+	// Downsample 16x16 to 8x8 by averaging 2x2 blocks
+	function downsample(pixels: number[]): number[] {
+		const downsampled: number[] = [];
+		for (let by = 0; by < 8; by++) {
+			for (let bx = 0; bx < 8; bx++) {
+				const i = (by * 2) * 16 + (bx * 2);
+				const avg = (
+					pixels[i] + pixels[i + 1] +
+					pixels[i + 16] + pixels[i + 17]
+				) / 4;
+				downsampled.push(avg);
+			}
+		}
+		return downsampled;
+	}
 
 	interface Props {
 		drawings: Drawing[];
@@ -41,7 +57,7 @@
 	let mouseY = $state(0);
 	let showPopup = $state(false);
 
-	// UMAP state
+	// t-SNE state
 	let positions: Map<string, { x: number; y: number }> = $state(new Map());
 	let isComputing = $state(false);
 	let progress = $state(0);
@@ -196,25 +212,17 @@
 		}
 		resizeCanvas();
 
-		// Initialize UMAP worker
-		worker = new Worker(new URL('$lib/workers/umap.worker.ts', import.meta.url), {
+		// Initialize t-SNE worker
+		worker = new Worker(new URL('$lib/workers/tsne.worker.ts', import.meta.url), {
 			type: 'module'
 		});
 
-		worker.onmessage = (event: MessageEvent<UMAPWorkerResponse>) => {
+		worker.onmessage = (event: MessageEvent<TSNEWorkerResponse>) => {
 			const data = event.data;
-
-			if (data.type === 'log') {
-				console.log(`[UMAP] ${data.message}`);
-				return;
-			}
 			
 			if (data.type === 'progress') {
 				progress = ((data.iteration || 0) / (data.totalIterations || 1)) * 100;
 			} else if (data.type === 'done' && data.embeddings) {
-				console.log(`[GalleryCanvas] UMAP done, got ${data.embeddings.length} embeddings`);
-				const postProcessStart = performance.now();
-				
 				// Map embeddings to drawing IDs
 				const newPositions = new Map<string, { x: number; y: number }>();
 				
@@ -244,14 +252,11 @@
 				});
 
 				// Push apart any overlapping drawings
-				const collisionStart = performance.now();
 				resolveCollisions(newPositions, MIN_SPACING);
-				console.log(`[GalleryCanvas] Collision resolution: ${(performance.now() - collisionStart).toFixed(1)}ms`);
 
 				positions = newPositions;
 				isComputing = false;
 				progress = 100;
-				console.log(`[GalleryCanvas] Post-UMAP processing: ${(performance.now() - postProcessStart).toFixed(1)}ms`);
 				
 				// Calculate bounds of all drawings
 				let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
@@ -276,15 +281,14 @@
 		};
 	});
 
-	// Track drawings length to trigger UMAP, but use untrack for the actual computation
+	// Track drawings length to trigger t-SNE, but use untrack for the actual computation
 	// to avoid creating deep reactive dependencies on every pixel value
 	let lastDrawingsLength = 0;
 	
 	$effect(() => {
 		const currentLength = drawings.length;
-		console.log(`[GalleryCanvas] Effect triggered: ${currentLength} drawings, worker=${!!worker}, isComputing=${isComputing}`);
 		
-		// Only run UMAP if:
+		// Only run t-SNE if:
 		// 1. We have drawings
 		// 2. Worker is ready
 		// 3. Not already computing
@@ -292,7 +296,7 @@
 		if (currentLength > 0 && worker && !isComputing && currentLength !== lastDrawingsLength) {
 			lastDrawingsLength = currentLength;
 			// Use untrack to read drawings without creating deep dependencies
-			untrack(() => runUMAP());
+			untrack(() => runTSNE());
 		}
 	});
 
@@ -309,34 +313,28 @@
 		}
 	});
 
-	function runUMAP() {
+	function runTSNE() {
 		// Read drawings without creating reactive dependencies
 		const currentDrawings = untrack(() => drawings);
 		
-		if (!worker || currentDrawings.length === 0) {
-			console.log('[GalleryCanvas] runUMAP skipped:', !worker ? 'no worker' : 'no drawings');
-			return;
-		}
+		if (!worker || currentDrawings.length === 0) return;
 
-		console.log(`[GalleryCanvas] Starting UMAP with ${currentDrawings.length} drawings`);
 		isComputing = true;
 		progress = 0;
 
-		// Convert Svelte proxies to plain arrays for worker transfer
-		const vectors = currentDrawings.map((d) => [...d.pixels]);
-		console.log(`[GalleryCanvas] Prepared ${vectors.length} vectors, each with ${vectors[0]?.length || 0} values`);
+		// Downsample 16x16 to 8x8 for comparison (64 dimensions instead of 256)
+		const vectors = currentDrawings.map((d) => downsample([...d.pixels]));
 
-		const message: UMAPWorkerMessage = {
+		const message: TSNEWorkerMessage = {
 			type: 'run',
 			vectors,
 			config: {
-				nNeighbors: 10,
-				minDist: 0.1,
-				nEpochs: 50
+				perplexity: 30,
+				iterations: 500,
+				learningRate: 100
 			}
 		};
 
-		console.log('[GalleryCanvas] Posting message to UMAP worker...');
 		worker.postMessage(message);
 	}
 
@@ -604,7 +602,7 @@
 	{#if isComputing}
 		<div class="loading-overlay">
 			<div class="loading-content">
-				<p class="loading-title">Computing UMAP layout</p>
+				<p class="loading-title">Computing t-SNE layout</p>
 				<div class="progress-bar">
 					<div class="progress-fill" style="width: {progress}%"></div>
 				</div>
