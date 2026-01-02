@@ -3,9 +3,11 @@
 
 	interface Props {
 		pixels?: number[];
+		onDrawStart?: () => void;
+		onDrawEnd?: () => void;
 	}
 
-	let { pixels = $bindable(getDefaultPixels()) }: Props = $props();
+	let { pixels = $bindable(getDefaultPixels()), onDrawStart, onDrawEnd }: Props = $props();
 
 	// Currently selected color index (0 = black by default)
 	let selectedColorIndex = $state(0);
@@ -87,6 +89,9 @@
 		// Capture pointer for smooth dragging
 		gridContainer.setPointerCapture(event.pointerId);
 		
+		// Notify parent that drawing started
+		onDrawStart?.();
+		
 		drawAtPoint(event.clientX, event.clientY);
 	}
 
@@ -99,6 +104,8 @@
 	function handlePointerUp(event: PointerEvent) {
 		if (isDrawing) {
 			gridContainer.releasePointerCapture(event.pointerId);
+			// Notify parent that drawing ended
+			onDrawEnd?.();
 		}
 		isDrawing = false;
 		isErasing = false;
@@ -265,6 +272,8 @@
 		width: var(--grid-size);
 		height: var(--grid-size);
 		flex-shrink: 0;
+		/* Allow canvas to show through when drawing */
+		transition: box-shadow 0.3s ease;
 	}
 
 	@media (max-width: 480px) {

@@ -263,9 +263,12 @@
 	interface Props {
 		drawings: Drawing[];
 		onCenterOnDrawing?: (fn: (drawingId: string) => void) => void;
+		// Preview mode props - for showing where a new drawing would land
+		previewMode?: boolean;
+		previewPixels?: number[];
 	}
 
-	let { drawings, onCenterOnDrawing }: Props = $props();
+	let { drawings, onCenterOnDrawing, previewMode = false, previewPixels = [] }: Props = $props();
 
 	// Expose centerOnDrawing method to parent
 	$effect(() => {
@@ -360,6 +363,12 @@
 	const FADE_IN_STAGGER = 25; // Delay between each drawing
 	const WAIT_BEFORE_CLUSTER = 600; // Pause before clustering animation
 
+	// Preview mode state - for predicting where new drawing would land
+	let previewPosition: { x: number; y: number } | null = $state(null);
+	let lastPreviewFeatures: number[] | null = null;
+	let previewComputeTimeout: ReturnType<typeof setTimeout> | null = null;
+	let cachedDrawingFeatures: Map<string, number[]> = new Map();
+
 	// Control panel state
 	let showControlPanel = $state(false);
 	
@@ -405,6 +414,114 @@
 				y: positions.get(d.id)!.y
 			}));
 	});
+
+	// Compute cosine similarity between two feature vectors
+	function cosineSimilarity(a: number[], b: number[]): number {
+		let dot = 0, magA = 0, magB = 0;
+		for (let i = 0; i < a.length; i++) {
+			dot += a[i] * b[i];
+			magA += a[i] * a[i];
+			magB += b[i] * b[i];
+		}
+		if (magA === 0 || magB === 0) return 0;
+		return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+	}
+
+	// Compute predicted position for preview drawing using k-nearest neighbors
+	function computePreviewPosition(pixels: number[]): { x: number; y: number } | null {
+		if (positions.size === 0 || !pixels || pixels.length === 0) return null;
+		
+		// Check if the drawing has any content (non-white pixels)
+		const hasContent = pixels.some(p => p !== COLOR_WHITE);
+		if (!hasContent) return null;
+		
+		// Get current feature weights
+		const weights = {
+			colorHist: weightColor,
+			adjacency: weightStyle,
+			symmetry: weightStyle,
+			structure: weightShape,
+			components: weightShape,
+			spatial: weightShape
+		};
+		
+		// Extract features for preview
+		const previewFeatures = extractEnhancedFeatures([...pixels], weights);
+		
+		// Cache features for existing drawings if not already cached
+		const currentDrawings = untrack(() => drawings);
+		for (const drawing of currentDrawings) {
+			if (!cachedDrawingFeatures.has(drawing.id)) {
+				cachedDrawingFeatures.set(drawing.id, extractEnhancedFeatures([...drawing.pixels], weights));
+			}
+		}
+		
+		// Find k nearest neighbors based on feature similarity
+		const k = Math.min(5, currentDrawings.length);
+		const similarities: { id: string; similarity: number }[] = [];
+		
+		for (const drawing of currentDrawings) {
+			const features = cachedDrawingFeatures.get(drawing.id);
+			if (features) {
+				similarities.push({
+					id: drawing.id,
+					similarity: cosineSimilarity(previewFeatures, features)
+				});
+			}
+		}
+		
+		// Sort by similarity (highest first)
+		similarities.sort((a, b) => b.similarity - a.similarity);
+		
+		// Get positions of top k neighbors
+		const topK = similarities.slice(0, k);
+		if (topK.length === 0) return null;
+		
+		// Weighted average position (weighted by similarity)
+		let totalWeight = 0;
+		let avgX = 0, avgY = 0;
+		
+		for (const { id, similarity } of topK) {
+			const pos = positions.get(id);
+			if (pos) {
+				// Use squared similarity as weight to emphasize closest matches
+				const weight = similarity * similarity;
+				avgX += pos.x * weight;
+				avgY += pos.y * weight;
+				totalWeight += weight;
+			}
+		}
+		
+		if (totalWeight === 0) return null;
+		
+		avgX /= totalWeight;
+		avgY /= totalWeight;
+		
+		// Add small random offset to avoid exact overlap
+		const offset = DRAWING_SIZE * 0.8;
+		avgX += (Math.random() - 0.5) * offset;
+		avgY += (Math.random() - 0.5) * offset;
+		
+		return { x: avgX, y: avgY };
+	}
+
+	// Pan to the preview position
+	function panToPreview(position: { x: number; y: number }) {
+		if (!canvas) return;
+		
+		// Animate to center on the preview position
+		targetOffsetX = canvas.width / 2 - position.x * targetScale;
+		targetOffsetY = canvas.height / 2 - position.y * targetScale;
+		
+		// Zoom in slightly for better visibility
+		targetScale = Math.max(targetScale, 1.5);
+		
+		// Stop any momentum
+		velocityX = 0;
+		velocityY = 0;
+		
+		startAnimation();
+	}
 
 	// Resolve overlapping positions using spatial grid (O(n) per iteration instead of O(n²))
 	function resolveCollisions(positionsMap: Map<string, { x: number; y: number }>, minDistance: number, iterations = 8) {
@@ -868,9 +985,22 @@
 					// Check if this is the first load
 					if (isFirstLoad && positions.size === 0) {
 						isFirstLoad = false;
-						// Start intro animation: random positions → fade in → cluster
-						const drawingIds = currentDrawings.map(d => d.id);
-						startIntroAnimation(drawingIds, newPositions);
+						// Skip intro animation in preview mode - just show clustered positions
+						if (previewMode) {
+							positions = newPositions;
+							introComplete = true;
+							// Set full opacity for all drawings
+							const fullOpacities = new Map<string, number>();
+							for (const drawing of currentDrawings) {
+								fullOpacities.set(drawing.id, 1);
+							}
+							drawingOpacities = fullOpacities;
+							fitAllInView();
+						} else {
+							// Start intro animation: random positions → fade in → cluster
+							const drawingIds = currentDrawings.map(d => d.id);
+							startIntroAnimation(drawingIds, newPositions);
+						}
 					} else if (positions.size > 0) {
 						// Store old positions and start animation to new positions
 						oldPositions = new Map(positions);
@@ -910,6 +1040,37 @@
 		}
 	});
 
+	// Watch previewPixels and compute predicted position when in preview mode
+	$effect(() => {
+		if (!previewMode) return;
+		
+		// Read pixels length to track changes
+		const pixelsLength = previewPixels.length;
+		if (pixelsLength === 0) return;
+		
+		// Debounce the computation
+		if (previewComputeTimeout) {
+			clearTimeout(previewComputeTimeout);
+		}
+		
+		previewComputeTimeout = setTimeout(() => {
+			// Use untrack to avoid deep reactive dependencies
+			const pixels = untrack(() => [...previewPixels]);
+			const pos = computePreviewPosition(pixels);
+			
+			if (pos) {
+				previewPosition = pos;
+				panToPreview(pos);
+			}
+		}, 150); // 150ms debounce
+		
+		return () => {
+			if (previewComputeTimeout) {
+				clearTimeout(previewComputeTimeout);
+			}
+		};
+	});
+
 	// Re-render when transform or positions change
 	$effect(() => {
 		// Read reactive values to track them
@@ -919,6 +1080,8 @@
 		const _drawings = drawingsWithPositions;
 		const _opacities = drawingOpacities;
 		const _mode = visualizationMode; // Track mode for timeline axis
+		const _previewPos = previewPosition; // Track preview position
+		const _previewMode = previewMode;
 		
 		if (ctx && _drawings) {
 			scheduleRender();
@@ -1207,6 +1370,111 @@
 
 			renderDrawing(drawing, screenX, screenY, size);
 		}
+
+		// Render preview drawing if in preview mode
+		if (previewMode && previewPosition && previewPixels.length > 0) {
+			renderPreviewDrawing();
+		}
+	}
+
+	// Generate SVG for preview pixels (similar to generateSVG but inline)
+	function generatePreviewSVG(pixels: number[]): string {
+		let rects = '';
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			let x = 0;
+			while (x < GRID_SIZE) {
+				const pixelValue = pixels[y * GRID_SIZE + x] ?? COLOR_WHITE;
+				let width = 1;
+				
+				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === pixelValue) {
+					width++;
+				}
+				
+				const isWhite = pixelValue === COLOR_WHITE || pixelValue === 255;
+				if (!isWhite) {
+					const hexColor = getPixelHexColor(pixelValue);
+					rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="${hexColor}"/>`;
+				}
+				
+				x += width;
+			}
+		}
+		
+		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_SIZE} ${GRID_SIZE}" shape-rendering="crispEdges"><rect width="${GRID_SIZE}" height="${GRID_SIZE}" fill="#fff"/>${rects}</svg>`;
+	}
+
+	// Cache for preview image
+	let previewImageCache: { pixels: string; img: HTMLImageElement } | null = null;
+
+	// Render the preview drawing with glow effect
+	function renderPreviewDrawing() {
+		if (!ctx || !previewPosition) return;
+		
+		const screenX = previewPosition.x * scale + offsetX;
+		const screenY = previewPosition.y * scale + offsetY;
+		const size = DRAWING_SIZE * scale;
+		const drawSize = Math.round(size);
+		const x = Math.round(screenX - drawSize / 2);
+		const y = Math.round(screenY - drawSize / 2);
+		
+		// Skip if off-screen
+		if (x + drawSize < 0 || x > canvas.width || y + drawSize < 0 || y > canvas.height) {
+			return;
+		}
+		
+		// Create or update cached preview image
+		const pixelsKey = previewPixels.join(',');
+		if (!previewImageCache || previewImageCache.pixels !== pixelsKey) {
+			const svg = generatePreviewSVG(previewPixels);
+			const dataUrl = 'data:image/svg+xml;base64,' + btoa(svg);
+			const img = new Image();
+			img.src = dataUrl;
+			previewImageCache = { pixels: pixelsKey, img };
+			// Re-render when image loads
+			img.onload = () => scheduleRender();
+		}
+		
+		const img = previewImageCache.img;
+		if (!img.complete) return;
+		
+		ctx.save();
+		
+		// Draw glow effect
+		ctx.shadowColor = 'rgba(59, 130, 246, 0.6)';
+		ctx.shadowBlur = 20 * scale;
+		ctx.shadowOffsetX = 0;
+		ctx.shadowOffsetY = 0;
+		
+		// Draw a rounded rect background for the glow
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+		ctx.beginPath();
+		ctx.roundRect(x - 4, y - 4, drawSize + 8, drawSize + 8, 4);
+		ctx.fill();
+		
+		// Reset shadow for the actual drawing
+		ctx.shadowColor = 'transparent';
+		ctx.shadowBlur = 0;
+		
+		// Draw border
+		ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		ctx.roundRect(x - 4, y - 4, drawSize + 8, drawSize + 8, 4);
+		ctx.stroke();
+		
+		// Draw the preview image with slight transparency
+		ctx.globalAlpha = 0.85;
+		ctx.drawImage(img, x, y, drawSize, drawSize);
+		
+		// Draw "Preview" label
+		ctx.globalAlpha = 1;
+		ctx.fillStyle = 'rgba(59, 130, 246, 0.9)';
+		ctx.font = `bold ${Math.max(10, 12 * scale)}px system-ui, -apple-system, sans-serif`;
+		ctx.textAlign = 'center';
+		ctx.fillText('Preview', screenX, y + drawSize + 16 * scale);
+		
+		ctx.restore();
 	}
 
 	// Cache for SVG images (scales perfectly at any size)
@@ -1326,6 +1594,9 @@
 	}
 
 	function handleWheel(event: WheelEvent) {
+		// Disable interaction in preview mode
+		if (previewMode) return;
+		
 		event.preventDefault();
 
 		const rect = canvas.getBoundingClientRect();
@@ -1350,6 +1621,9 @@
 	}
 
 	function handlePointerDown(event: PointerEvent) {
+		// Disable interaction in preview mode
+		if (previewMode) return;
+		
 		// Skip if pinching (touch events handle this)
 		if (isPinching || event.pointerType === 'touch') return;
 		
@@ -1460,6 +1734,9 @@
 
 	// Touch event handlers for pinch-to-zoom and panning
 	function handleTouchStart(event: TouchEvent) {
+		// Disable interaction in preview mode
+		if (previewMode) return;
+		
 		// Clear stale touches and rebuild from current event
 		activeTouches.clear();
 		for (let i = 0; i < event.touches.length; i++) {
@@ -1641,7 +1918,7 @@
 <svelte:window onresize={resizeCanvas} />
 
 <div class="gallery-container" bind:this={container}>
-	{#if isComputing}
+	{#if isComputing && !previewMode}
 		<div class="loading-overlay">
 			<div class="loading-content">
 				<p class="loading-title">Computing UMAP layout</p>
@@ -1655,6 +1932,7 @@
 
 	<canvas
 		bind:this={canvas}
+		class:preview-mode={previewMode}
 		onwheel={handleWheel}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
@@ -1666,17 +1944,19 @@
 		ontouchcancel={handleTouchEnd}
 	></canvas>
 
-	<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup && introComplete} />
+	{#if !previewMode}
+		<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup && introComplete} />
 
-	{#if introComplete}
-		<div class="controls" class:visible={introComplete}>
-			<button onclick={() => showControlPanel = !showControlPanel} class:active={showControlPanel}>
-				⚙️ Tune
-			</button>
-		</div>
+		{#if introComplete}
+			<div class="controls" class:visible={introComplete}>
+				<button onclick={() => showControlPanel = !showControlPanel} class:active={showControlPanel}>
+					⚙️ Tune
+				</button>
+			</div>
+		{/if}
 	{/if}
 
-	{#if showControlPanel && introComplete}
+	{#if showControlPanel && introComplete && !previewMode}
 		<div class="control-panel">
 			<div class="panel-header">
 				<h3>Visualization Settings</h3>
@@ -1778,7 +2058,7 @@
 		</div>
 	{/if}
 
-	{#if drawings.length === 0}
+	{#if drawings.length === 0 && !previewMode}
 		<div class="empty-state">
 			<p>No drawings yet!</p>
 			<p class="hint">Be the first to create one.</p>
@@ -1806,6 +2086,11 @@
 
 	canvas:active {
 		cursor: grabbing;
+	}
+
+	canvas.preview-mode {
+		cursor: default;
+		pointer-events: none;
 	}
 
 	.loading-overlay {

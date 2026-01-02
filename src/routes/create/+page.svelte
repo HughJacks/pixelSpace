@@ -2,7 +2,9 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import PixelEditor from '$lib/components/PixelEditor.svelte';
-	import { createDrawing } from '$lib/supabase';
+	import GalleryCanvas from '$lib/components/GalleryCanvas.svelte';
+	import { createDrawing, getAllDrawings } from '$lib/supabase';
+	import type { Drawing } from '$lib/types';
 
 	let username = $state('');
 	let usernameInput = $state('');
@@ -11,8 +13,13 @@
 	let isSaving = $state(false);
 	let error = $state('');
 	let currentPixels: number[] = $state([]);
+	
+	// Gallery preview state
+	let drawings: Drawing[] = $state([]);
+	let isLoadingDrawings = $state(true);
+	let isDrawing = $state(false);
 
-	onMount(() => {
+	onMount(async () => {
 		const storedUsername = localStorage.getItem('pixelspace_username');
 		if (storedUsername) {
 			username = storedUsername;
@@ -20,6 +27,14 @@
 			// Show username modal if not set
 			showUsernameModal = true;
 		}
+		
+		// Load existing drawings for the background canvas
+		try {
+			drawings = await getAllDrawings();
+		} catch (err) {
+			console.warn('Failed to load drawings for preview:', err);
+		}
+		isLoadingDrawings = false;
 	});
 
 	function handleSetUsername() {
@@ -76,13 +91,25 @@
 </script>
 
 <div class="page">
+	<!-- Background canvas showing existing drawings -->
+	<div class="canvas-background" class:active={isDrawing}>
+		{#if !isLoadingDrawings && drawings.length > 0}
+			<GalleryCanvas 
+				{drawings} 
+				previewPixels={currentPixels}
+				previewMode={true}
+			/>
+		{/if}
+	</div>
+
+
 	<button class="btn-back" onclick={handleBack} aria-label="Back to gallery">
 		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M19 12H5M12 19l-7-7 7-7" />
 		</svg>
 	</button>
 
-	<main>
+	<main class:drawing={isDrawing}>
 		<div class="editor-section">
 			<div class="name-input-wrapper">
 				<input
@@ -94,7 +121,11 @@
 				/>
 			</div>
 
-			<PixelEditor bind:pixels={currentPixels} />
+			<PixelEditor 
+				bind:pixels={currentPixels} 
+				onDrawStart={() => isDrawing = true}
+				onDrawEnd={() => isDrawing = false}
+			/>
 
 			{#if error}
 				<p class="error">{error}</p>
@@ -159,6 +190,26 @@
 		touch-action: pan-x pan-y;
 	}
 
+	/* Background canvas layer */
+	.canvas-background {
+		position: absolute;
+		inset: 0;
+		z-index: 0;
+		opacity: 0.15;
+		transition: opacity 0.4s ease;
+		pointer-events: none;
+	}
+
+	.canvas-background.active {
+		opacity: 0.6;
+		pointer-events: none;
+	}
+
+	main.drawing {
+		background: rgba(245, 245, 245, 0.7);
+		backdrop-filter: blur(1px);
+	}
+
 	.btn-back {
 		position: fixed;
 		top: 1.25rem;
@@ -195,6 +246,10 @@
 		gap: 0.75rem;
 		min-height: 0; /* Allow flex shrinking */
 		overflow: hidden;
+		/* Positioning for canvas background effect */
+		position: relative;
+		z-index: 10;
+		transition: background 0.3s ease;
 	}
 
 	@media (min-width: 768px) {
@@ -482,4 +537,5 @@
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
+
 </style>
