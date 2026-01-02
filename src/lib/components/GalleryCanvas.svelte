@@ -211,7 +211,7 @@
 
 	// Drawing size on canvas
 	const DRAWING_SIZE = 48;
-	const DRAWING_PADDING = 1;
+	const DRAWING_PADDING = 20;
 	const MIN_SPACING = DRAWING_SIZE + DRAWING_PADDING * 2;
 
 	// Bounds of all drawings (for fit-all functionality)

@@ -107,6 +107,8 @@
 		display: flex;
 		flex-direction: column;
 		position: relative;
+		/* Prevent browser pinch-zoom on this page */
+		touch-action: pan-x pan-y;
 	}
 
 	.btn-back {

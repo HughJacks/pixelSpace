@@ -83,16 +83,17 @@
 
 <div class="pixel-editor">
 	<div class="palette-bar">
-		{#each PALETTE as color, index}
-			<button
-				class="color-swatch"
-				class:active={selectedColorIndex === index}
-				style="background-color: {colorToHex(color)}"
-				onclick={() => (selectedColorIndex = index)}
-				title={color.name}
-			></button>
-		{/each}
-		<div class="palette-divider"></div>
+		<div class="color-swatches">
+			{#each PALETTE as color, index}
+				<button
+					class="color-swatch"
+					class:active={selectedColorIndex === index}
+					style="background-color: {colorToHex(color)}"
+					onclick={() => (selectedColorIndex = index)}
+					title={color.name}
+				></button>
+			{/each}
+		</div>
 		<button class="tool-btn" onclick={clearCanvas} title="Clear Canvas">
 			Clear
 		</button>
@@ -132,23 +133,49 @@
 
 	.palette-bar {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
-		gap: 0.375rem;
-		padding: 0.625rem 0.875rem;
+		gap: 0.625rem;
+		padding: 0.75rem 1rem;
 		background: #fff;
 		border: 1px solid #e0e0e0;
 		border-radius: 12px;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 	}
 
+	.color-swatches {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 0.5rem;
+	}
+
+	@media (min-width: 480px) {
+		.palette-bar {
+			flex-direction: row;
+			gap: 0.75rem;
+		}
+
+		.color-swatches {
+			grid-template-columns: repeat(8, 1fr);
+			gap: 0.375rem;
+		}
+	}
+
 	.color-swatch {
-		width: 32px;
-		height: 32px;
+		width: 36px;
+		height: 36px;
 		border: 2px solid #ddd;
 		border-radius: 6px;
 		cursor: pointer;
 		transition: all 0.15s ease;
 		padding: 0;
+	}
+
+	@media (min-width: 480px) {
+		.color-swatch {
+			width: 32px;
+			height: 32px;
+		}
 	}
 
 	.color-swatch:hover {
@@ -160,13 +187,6 @@
 		border-color: #000;
 		box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000;
 		transform: scale(1.1);
-	}
-
-	.palette-divider {
-		width: 1px;
-		height: 28px;
-		background: #e0e0e0;
-		margin: 0 0.5rem;
 	}
 
 	.tool-btn {
