@@ -363,6 +363,14 @@
 	// Control panel state
 	let showControlPanel = $state(false);
 	
+	// Visualization mode: 'cluster' (2D UMAP) or 'timeline' (X=time, Y=1D UMAP)
+	type VisualizationMode = 'cluster' | 'timeline';
+	let visualizationMode = $state<VisualizationMode>('cluster');
+	
+	// Store last UMAP embeddings to reuse when switching modes
+	let lastEmbeddings: [number, number][] | null = null;
+	let lastDrawingIds: string[] = [];
+	
 	// User-friendly feature weights (0-2 range, 1 = normal)
 	// These map to the technical feature groups internally
 	let weightColor = $state(1);  // → color histogram
@@ -458,6 +466,113 @@
 				}
 			}
 		}
+	}
+
+	// Compute positions based on visualization mode
+	function computePositionsForMode(
+		currentDrawings: typeof drawings,
+		embeddings: [number, number][],
+		mode: VisualizationMode
+	): Map<string, { x: number; y: number }> {
+		const newPositions = new Map<string, { x: number; y: number }>();
+		const isMobile = canvas.width < 768;
+		
+		if (mode === 'cluster') {
+			// Standard 2D UMAP clustering
+			let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+			for (const [ex, ey] of embeddings) {
+				minX = Math.min(minX, ex);
+				maxX = Math.max(maxX, ex);
+				minY = Math.min(minY, ey);
+				maxY = Math.max(maxY, ey);
+			}
+			
+			const rangeX = maxX - minX || 1;
+			const rangeY = maxY - minY || 1;
+			const spreadMultiplier = isMobile ? 3.0 : 1.8;
+			const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
+
+			currentDrawings.forEach((drawing, i) => {
+				if (embeddings[i]) {
+					const normalizedX = ((embeddings[i][0] - minX) / rangeX - 0.5) * spreadFactor;
+					const normalizedY = ((embeddings[i][1] - minY) / rangeY - 0.5) * spreadFactor;
+					newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
+				}
+			});
+		} else {
+			// Timeline mode: X = time, Y = 1D UMAP (first component)
+			
+			// Parse timestamps and find range
+			const timestamps = currentDrawings.map(d => new Date(d.created).getTime());
+			const minTime = Math.min(...timestamps);
+			const maxTime = Math.max(...timestamps);
+			const timeRange = maxTime - minTime || 1;
+			
+			// Find Y range from first UMAP component
+			let minY = Infinity, maxY = -Infinity;
+			for (const [, ey] of embeddings) {
+				minY = Math.min(minY, ey);
+				maxY = Math.max(maxY, ey);
+			}
+			const yRange = maxY - minY || 1;
+			
+			// Use wider spread for timeline (drawings spread across time)
+			const spreadMultiplier = isMobile ? 4.0 : 2.5;
+			const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
+			
+			currentDrawings.forEach((drawing, i) => {
+				if (embeddings[i]) {
+					const timestamp = new Date(drawing.created).getTime();
+					// X = normalized time (oldest left, newest right)
+					const normalizedX = ((timestamp - minTime) / timeRange - 0.5) * spreadFactor;
+					// Y = first UMAP component (similarity)
+					const normalizedY = ((embeddings[i][1] - minY) / yRange - 0.5) * spreadFactor * 0.6;
+					newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
+				}
+			});
+		}
+
+		// Push apart any overlapping drawings
+		const mobileSpacing = isMobile ? MIN_SPACING * 1.5 : MIN_SPACING;
+		resolveCollisions(newPositions, mobileSpacing);
+		
+		return newPositions;
+	}
+
+	// Switch visualization mode and recompute positions
+	function switchVisualizationMode(mode: VisualizationMode) {
+		if (mode === visualizationMode) return;
+		if (!lastEmbeddings || lastEmbeddings.length === 0) return;
+		
+		visualizationMode = mode;
+		
+		// Get current drawings that match stored embeddings
+		const currentDrawings = untrack(() => drawings);
+		
+		// Verify embeddings match current drawings
+		if (lastDrawingIds.length !== currentDrawings.length) {
+			// Data changed, need to recompute UMAP
+			runUMAP(true);
+			return;
+		}
+		
+		// Recompute positions with new mode
+		const newPositions = computePositionsForMode(currentDrawings, lastEmbeddings, mode);
+		
+		// Update bounds
+		let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+		for (const pos of newPositions.values()) {
+			bMinX = Math.min(bMinX, pos.x);
+			bMaxX = Math.max(bMaxX, pos.x);
+			bMinY = Math.min(bMinY, pos.y);
+			bMaxY = Math.max(bMaxY, pos.y);
+		}
+		bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
+		
+		// Animate to new positions
+		oldPositions = new Map(positions);
+		targetPositions = newPositions;
+		startPositionAnimation();
 	}
 
 	// Schedule a render on next animation frame
@@ -714,40 +829,16 @@
 			} else if (data.type === 'done' && data.embeddings) {
 				// Handle async operations in an IIFE
 				(async () => {
-					// Map embeddings to drawing IDs
-					const newPositions = new Map<string, { x: number; y: number }>();
-					
-					// Normalize embeddings to fit nicely in the view
 					const embeddings = data.embeddings!;
-					let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-					
-					for (const [ex, ey] of embeddings) {
-						minX = Math.min(minX, ex);
-						maxX = Math.max(maxX, ex);
-						minY = Math.min(minY, ey);
-						maxY = Math.max(maxY, ey);
-					}
-					
-					const rangeX = maxX - minX || 1;
-					const rangeY = maxY - minY || 1;
-					// Use larger spread on mobile so drawings aren't cramped
-					const isMobile = canvas.width < 768;
-					const spreadMultiplier = isMobile ? 3.0 : 1.8;
-					const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
-
-					// Use untrack to avoid creating reactive dependencies
 					const currentDrawings = untrack(() => drawings);
-					currentDrawings.forEach((drawing, i) => {
-						if (embeddings[i]) {
-							const normalizedX = ((embeddings[i][0] - minX) / rangeX - 0.5) * spreadFactor;
-							const normalizedY = ((embeddings[i][1] - minY) / rangeY - 0.5) * spreadFactor;
-							newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
-						}
-					});
-
-					// Push apart any overlapping drawings - use larger spacing on mobile
-					const mobileSpacing = isMobile ? MIN_SPACING * 1.5 : MIN_SPACING;
-					resolveCollisions(newPositions, mobileSpacing);
+					const currentMode = untrack(() => visualizationMode);
+					
+					// Store embeddings for mode switching
+					lastEmbeddings = embeddings;
+					lastDrawingIds = currentDrawings.map(d => d.id);
+					
+					// Compute positions based on current visualization mode
+					const newPositions = computePositionsForMode(currentDrawings, embeddings, currentMode);
 
 					isComputing = false;
 					progress = 100;
@@ -1441,8 +1532,38 @@
 	{#if showControlPanel && introComplete}
 		<div class="control-panel">
 			<div class="panel-header">
-				<h3>Clustering Settings</h3>
+				<h3>Visualization Settings</h3>
 				<button class="close-btn" onclick={() => showControlPanel = false}>×</button>
+			</div>
+			
+			<div class="panel-section">
+				<h4>View Mode</h4>
+				<p class="section-hint">How should drawings be arranged?</p>
+				<div class="mode-toggle">
+					<button 
+						class="mode-btn" 
+						class:active={visualizationMode === 'cluster'}
+						onclick={() => switchVisualizationMode('cluster')}
+						disabled={isComputing || isAnimatingPositions}
+					>
+						🔮 Cluster
+					</button>
+					<button 
+						class="mode-btn" 
+						class:active={visualizationMode === 'timeline'}
+						onclick={() => switchVisualizationMode('timeline')}
+						disabled={isComputing || isAnimatingPositions}
+					>
+						📅 Timeline
+					</button>
+				</div>
+				<p class="slider-hint">
+					{#if visualizationMode === 'cluster'}
+						Similar drawings grouped together
+					{:else}
+						X = time created, Y = similarity
+					{/if}
+				</p>
 			</div>
 			
 			<div class="panel-section">
@@ -1829,6 +1950,40 @@
 		margin: 0 0 12px 0;
 		font-size: 0.75rem;
 		color: #999;
+	}
+
+	.mode-toggle {
+		display: flex;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+
+	.mode-btn {
+		flex: 1;
+		padding: 8px 12px;
+		border: 1px solid #e0e0e0;
+		border-radius: 8px;
+		background: #fff;
+		font-size: 0.8rem;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		color: #666;
+	}
+
+	.mode-btn:hover:not(:disabled) {
+		border-color: #999;
+		color: #333;
+	}
+
+	.mode-btn.active {
+		background: #000;
+		border-color: #000;
+		color: #fff;
+	}
+
+	.mode-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 
 	.slider-row {
