@@ -362,6 +362,38 @@
 	const FADE_IN_DURATION = 800; // Total duration for all fade-ins
 	const FADE_IN_STAGGER = 25; // Delay between each drawing
 	const WAIT_BEFORE_CLUSTER = 600; // Pause before clustering animation
+	const INTRO_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes - show intro again after this long
+	const GALLERY_LAST_SEEN_KEY = 'pixelspace_gallery_last_seen';
+	
+	// Check if we should show the intro animation
+	function shouldShowIntroAnimation(): boolean {
+		if (typeof window === 'undefined') return true;
+		
+		try {
+			const lastSeen = localStorage.getItem(GALLERY_LAST_SEEN_KEY);
+			if (!lastSeen) return true; // Never seen before - show intro
+			
+			const lastSeenTime = parseInt(lastSeen, 10);
+			const now = Date.now();
+			const timeSinceLastSeen = now - lastSeenTime;
+			
+			// Show intro if it's been more than the cooldown period
+			return timeSinceLastSeen > INTRO_COOLDOWN_MS;
+		} catch {
+			return true; // On error, default to showing intro
+		}
+	}
+	
+	// Mark that the user has seen the gallery
+	function markGallerySeen() {
+		if (typeof window === 'undefined') return;
+		
+		try {
+			localStorage.setItem(GALLERY_LAST_SEEN_KEY, Date.now().toString());
+		} catch {
+			// Ignore storage errors
+		}
+	}
 
 	// Preview mode state - for predicting where new drawing would land
 	let previewPosition: { x: number; y: number } | null = $state(null);
@@ -915,6 +947,7 @@
 					// Mark intro complete when clustering animation ends
 					setTimeout(() => {
 						introComplete = true;
+						markGallerySeen();
 					}, POSITION_ANIMATION_DURATION + 200);
 				}, WAIT_BEFORE_CLUSTER);
 			}
@@ -996,10 +1029,23 @@
 							}
 							drawingOpacities = fullOpacities;
 							fitAllInView();
-						} else {
+							markGallerySeen();
+						} else if (shouldShowIntroAnimation()) {
 							// Start intro animation: random positions → fade in → cluster
 							const drawingIds = currentDrawings.map(d => d.id);
 							startIntroAnimation(drawingIds, newPositions);
+						} else {
+							// Skip intro - show clustered positions immediately
+							positions = newPositions;
+							introComplete = true;
+							// Set full opacity for all drawings
+							const fullOpacities = new Map<string, number>();
+							for (const drawing of currentDrawings) {
+								fullOpacities.set(drawing.id, 1);
+							}
+							drawingOpacities = fullOpacities;
+							fitAllInView();
+							markGallerySeen();
 						}
 					} else if (positions.size > 0) {
 						// Store old positions and start animation to new positions
@@ -1011,6 +1057,7 @@
 						positions = newPositions;
 						fitAllInView();
 						introComplete = true;
+						markGallerySeen();
 					}
 				})();
 			}
