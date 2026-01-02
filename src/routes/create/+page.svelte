@@ -10,6 +10,7 @@
 	let drawingName = $state('');
 	let isSaving = $state(false);
 	let error = $state('');
+	let currentPixels: number[] = $state([]);
 
 	onMount(() => {
 		const storedUsername = localStorage.getItem('pixelspace_username');
@@ -35,7 +36,7 @@
 		}
 	}
 
-	async function handleSave(savedPixels: number[]) {
+	async function handleSaveClick() {
 		if (!drawingName.trim()) {
 			error = 'Please give your drawing a name';
 			return;
@@ -53,7 +54,7 @@
 			const result = await createDrawing({
 				name: drawingName.trim(),
 				creator: username,
-				pixels: savedPixels
+				pixels: currentPixels
 			});
 
 			if (result) {
@@ -93,19 +94,22 @@
 				/>
 			</div>
 
-			<PixelEditor onSave={handleSave} />
+			<PixelEditor bind:pixels={currentPixels} />
 
 			{#if error}
 				<p class="error">{error}</p>
 			{/if}
 		</div>
 
-		{#if username}
-			<div class="creator-badge">
-				<span class="avatar">{username[0].toUpperCase()}</span>
-				<span class="username">{username}</span>
-			</div>
-		{/if}
+		<div class="footer-row">
+			{#if username}
+				<div class="creator-badge">
+					<span class="avatar">{username[0].toUpperCase()}</span>
+					<span class="username">{username}</span>
+				</div>
+			{/if}
+			<button class="btn-save" onclick={handleSaveClick}>Save Drawing</button>
+		</div>
 	</main>
 
 	{#if isSaving}
@@ -144,12 +148,13 @@
 
 <style>
 	.page {
-		min-height: 100vh;
-		min-height: 100dvh;
+		height: 100vh;
+		height: 100dvh;
 		background: #f5f5f5;
 		display: flex;
 		flex-direction: column;
 		position: relative;
+		overflow: hidden;
 		/* Prevent browser pinch-zoom on this page */
 		touch-action: pan-x pan-y;
 	}
@@ -186,33 +191,59 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		padding: 2rem;
-		gap: 1.5rem;
+		padding: 1rem;
+		gap: 0.75rem;
+		min-height: 0; /* Allow flex shrinking */
+		overflow: hidden;
+	}
+
+	@media (min-width: 768px) {
+		main {
+			padding: 2rem;
+			gap: 1.5rem;
+		}
 	}
 
 	.editor-section {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 1.5rem;
+		gap: 0.75rem;
+		max-height: 100%;
+		min-height: 0;
+	}
+
+	@media (min-width: 768px) {
+		.editor-section {
+			gap: 1.5rem;
+		}
 	}
 
 	.name-input-wrapper {
 		width: 100%;
 		max-width: 500px;
+		flex-shrink: 0;
 	}
 
 	.name-input-wrapper input {
 		width: 100%;
-		padding: 1rem 1.25rem;
+		padding: 0.75rem 1rem;
 		background: #fff;
 		border: 2px solid #e0e0e0;
-		border-radius: 12px;
+		border-radius: 10px;
 		color: #000;
-		font-size: 1.1rem;
+		font-size: 1rem;
 		text-align: center;
 		transition: all 0.15s ease;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+	}
+
+	@media (min-width: 768px) {
+		.name-input-wrapper input {
+			padding: 1rem 1.25rem;
+			border-radius: 12px;
+			font-size: 1.1rem;
+		}
 	}
 
 	.name-input-wrapper input:focus {
@@ -238,11 +269,19 @@
 		border-radius: 8px;
 	}
 
+	.footer-row {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 1rem;
+		flex-shrink: 0;
+	}
+
 	.creator-badge {
 		display: flex;
 		align-items: center;
-		gap: 0.625rem;
-		padding: 0.5rem 1rem 0.5rem 0.5rem;
+		gap: 0.5rem;
+		padding: 0.375rem 0.75rem 0.375rem 0.375rem;
 		background: #fff;
 		border: 1px solid #e0e0e0;
 		border-radius: 100px;
@@ -250,22 +289,45 @@
 	}
 
 	.avatar {
-		width: 32px;
-		height: 32px;
+		width: 28px;
+		height: 28px;
 		background: #000;
 		border-radius: 50%;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		font-weight: 700;
-		font-size: 0.85rem;
+		font-size: 0.8rem;
 		color: #fff;
 	}
 
 	.username {
 		font-weight: 500;
 		color: #333;
-		font-size: 0.9rem;
+		font-size: 0.85rem;
+	}
+
+	.btn-save {
+		padding: 0.75rem 1.5rem;
+		background: #000;
+		border: none;
+		border-radius: 10px;
+		color: #fff;
+		font-size: 0.95rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+	}
+
+	.btn-save:hover {
+		background: #222;
+		transform: translateY(-2px);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	}
+
+	.btn-save:active {
+		transform: translateY(0);
 	}
 
 	.saving-overlay {

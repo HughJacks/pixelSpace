@@ -3,13 +3,9 @@
 
 	interface Props {
 		pixels?: number[];
-		onSave?: (pixels: number[]) => void;
 	}
 
-	let { pixels: pixelsProp = getDefaultPixels(), onSave }: Props = $props();
-
-	// Local copy of pixels to avoid mutating props directly
-	let pixels = $state([...pixelsProp]);
+	let { pixels = $bindable(getDefaultPixels()) }: Props = $props();
 
 	// Currently selected color index (0 = black by default)
 	let selectedColorIndex = $state(0);
@@ -114,10 +110,6 @@
 		pixels = getDefaultPixels();
 	}
 
-	function handleSave() {
-		onSave?.(pixels);
-	}
-
 	function handleContextMenu(event: MouseEvent) {
 		event.preventDefault();
 	}
@@ -163,12 +155,6 @@
 			{/each}
 		</div>
 	</div>
-
-	{#if onSave}
-		<div class="actions">
-			<button class="btn-save" onclick={handleSave}>Save Drawing</button>
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -176,54 +162,62 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 1.5rem;
+		gap: 0.75rem;
 		width: 100%;
+		max-height: 100%;
+		min-height: 0;
+	}
+
+	@media (min-width: 768px) {
+		.pixel-editor {
+			gap: 1.5rem;
+		}
 	}
 
 	.palette-bar {
 		display: flex;
-		flex-direction: column;
+		flex-direction: row;
 		align-items: center;
-		gap: 0.625rem;
-		padding: 0.75rem 1rem;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
 		background: #fff;
 		border: 1px solid #e0e0e0;
-		border-radius: 12px;
+		border-radius: 10px;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+		flex-shrink: 0;
 	}
 
 	.color-swatches {
 		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 0.5rem;
-	}
-
-	@media (min-width: 480px) {
-		.palette-bar {
-			flex-direction: row;
-			gap: 0.75rem;
-		}
-
-		.color-swatches {
-			grid-template-columns: repeat(8, 1fr);
-			gap: 0.375rem;
-		}
+		grid-template-columns: repeat(8, 1fr);
+		gap: 0.25rem;
 	}
 
 	.color-swatch {
-		width: 36px;
-		height: 36px;
+		width: 28px;
+		height: 28px;
 		border: 2px solid #ddd;
-		border-radius: 6px;
+		border-radius: 5px;
 		cursor: pointer;
 		transition: all 0.15s ease;
 		padding: 0;
 	}
 
 	@media (min-width: 480px) {
+		.palette-bar {
+			gap: 0.75rem;
+			padding: 0.75rem 1rem;
+			border-radius: 12px;
+		}
+
+		.color-swatches {
+			gap: 0.375rem;
+		}
+
 		.color-swatch {
 			width: 32px;
 			height: 32px;
+			border-radius: 6px;
 		}
 	}
 
@@ -266,9 +260,18 @@
 		box-shadow:
 			0 4px 20px rgba(0, 0, 0, 0.12),
 			0 0 0 1px rgba(0, 0, 0, 0.08);
-		/* Constrain to viewport with padding */
-		width: min(calc(100vw - 2rem), 580px);
-		max-width: 100%;
+		/* Fit within viewport - account for name input, palette, save button, creator badge, gaps, and padding */
+		--grid-size: min(calc(100vw - 3rem), calc(100dvh - 340px), 450px);
+		width: var(--grid-size);
+		height: var(--grid-size);
+		flex-shrink: 0;
+	}
+
+	@media (max-width: 480px) {
+		.grid-wrapper {
+			/* Mobile: tighter constraints, no creator badge shown */
+			--grid-size: min(calc(100vw - 1.5rem), calc(100dvh - 240px));
+		}
 	}
 
 	.grid-container {
@@ -285,32 +288,5 @@
 		aspect-ratio: 1;
 		width: 100%;
 		pointer-events: none;
-	}
-
-	.actions {
-		margin-top: 0.5rem;
-	}
-
-	.btn-save {
-		padding: 1rem 2.5rem;
-		background: #000;
-		border: none;
-		border-radius: 10px;
-		color: #fff;
-		font-size: 1rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-	}
-
-	.btn-save:hover {
-		background: #222;
-		transform: translateY(-2px);
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-	}
-
-	.btn-save:active {
-		transform: translateY(0);
 	}
 </style>

@@ -1628,9 +1628,111 @@
 		border-radius: 12px;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
 		z-index: 50;
-		overflow: hidden;
 		max-height: calc(100vh - 140px);
+		max-height: calc(100dvh - 140px);
 		overflow-y: auto;
+	}
+
+	/* Smaller laptop screens */
+	@media (max-height: 800px) {
+		.control-panel {
+			top: 50px;
+			width: 240px;
+			max-height: calc(100vh - 120px);
+			max-height: calc(100dvh - 120px);
+		}
+
+		.panel-header {
+			padding: 10px 12px;
+		}
+
+		.panel-section {
+			padding: 10px 12px;
+		}
+
+		.section-hint {
+			margin-bottom: 8px;
+		}
+
+		.slider-hint {
+			margin: -4px 0 8px 0;
+			font-size: 0.65rem;
+		}
+
+		.label-text {
+			flex: 0 0 65px;
+			font-size: 0.75rem;
+		}
+
+		.recluster-btn {
+			margin: 10px 12px 12px;
+			padding: 8px 12px;
+		}
+	}
+
+	/* Very small laptop screens */
+	@media (max-height: 700px) {
+		.control-panel {
+			top: auto;
+			bottom: 70px;
+			right: 12px;
+			width: 220px;
+			max-height: calc(100vh - 140px);
+			max-height: calc(100dvh - 140px);
+		}
+
+		.panel-header {
+			padding: 8px 10px;
+		}
+
+		.panel-header h3 {
+			font-size: 0.8rem;
+		}
+
+		.panel-section {
+			padding: 8px 10px;
+		}
+
+		.panel-section h4 {
+			margin-bottom: 2px;
+			font-size: 0.7rem;
+		}
+
+		.section-hint {
+			margin-bottom: 6px;
+			font-size: 0.65rem;
+		}
+
+		.slider-row {
+			margin-bottom: 4px;
+			gap: 6px;
+		}
+
+		.label-text {
+			flex: 0 0 55px;
+			font-size: 0.7rem;
+		}
+
+		.slider-hint {
+			margin: -2px 0 6px 0;
+			font-size: 0.6rem;
+		}
+
+		.slider-row .value {
+			flex: 0 0 28px;
+			font-size: 0.7rem;
+		}
+
+		.recluster-btn {
+			margin: 8px 10px 10px;
+			padding: 6px 10px;
+			font-size: 0.8rem;
+		}
+
+		.advanced-section summary {
+			padding: 8px 10px;
+			font-size: 0.7rem;
+		}
 	}
 
 	/* Mobile control panel */
@@ -1642,6 +1744,7 @@
 			left: 12px;
 			width: auto;
 			max-height: 60vh;
+			max-height: 60dvh;
 			border-radius: 16px;
 		}
 	}
@@ -1714,13 +1817,14 @@
 	}
 
 	.label-text {
-		flex: 0 0 80px;
+		flex: 0 0 70px;
 		font-size: 0.8rem;
 		color: #333;
 	}
 
 	.slider-row input[type="range"] {
 		flex: 1;
+		min-width: 0;
 		height: 4px;
 		-webkit-appearance: none;
 		appearance: none;
