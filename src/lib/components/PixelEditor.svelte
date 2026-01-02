@@ -14,6 +14,10 @@
 	// Currently selected color index (0 = black by default)
 	let selectedColorIndex = $state(0);
 	let isDrawing = $state(false);
+	let isErasing = $state(false);
+	let gridContainer: HTMLDivElement;
+	let lastPixelX = -1;
+	let lastPixelY = -1;
 
 	// Convert flat array to 2D grid for easier rendering (color indices)
 	let grid = $derived.by(() => {
@@ -35,35 +39,75 @@
 	}
 
 	function setPixel(x: number, y: number, colorIndex: number) {
+		if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
 		const idx = y * GRID_SIZE + x;
-		pixels[idx] = colorIndex;
-		pixels = [...pixels];
+		if (pixels[idx] !== colorIndex) {
+			pixels[idx] = colorIndex;
+			pixels = [...pixels];
+		}
 	}
 
-	function handlePointerDown(x: number, y: number, event: PointerEvent) {
+	// Get pixel coordinates from pointer position
+	function getPixelFromPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+		if (!gridContainer) return null;
+		
+		const rect = gridContainer.getBoundingClientRect();
+		const relX = clientX - rect.left;
+		const relY = clientY - rect.top;
+		
+		// Account for 1px gap between pixels
+		const cellWidth = rect.width / GRID_SIZE;
+		const cellHeight = rect.height / GRID_SIZE;
+		
+		const x = Math.floor(relX / cellWidth);
+		const y = Math.floor(relY / cellHeight);
+		
+		if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+			return { x, y };
+		}
+		return null;
+	}
+
+	function drawAtPoint(clientX: number, clientY: number) {
+		const pixel = getPixelFromPoint(clientX, clientY);
+		if (!pixel) return;
+		
+		// Only draw if we moved to a new pixel
+		if (pixel.x === lastPixelX && pixel.y === lastPixelY) return;
+		
+		lastPixelX = pixel.x;
+		lastPixelY = pixel.y;
+		
+		setPixel(pixel.x, pixel.y, isErasing ? COLOR_WHITE : selectedColorIndex);
+	}
+
+	function handlePointerDown(event: PointerEvent) {
 		event.preventDefault();
 		isDrawing = true;
-
-		// Right click always erases (white)
-		if (event.button === 2) {
-			setPixel(x, y, COLOR_WHITE);
-		} else {
-			setPixel(x, y, selectedColorIndex);
-		}
+		isErasing = event.button === 2;
+		lastPixelX = -1;
+		lastPixelY = -1;
+		
+		// Capture pointer for smooth dragging
+		gridContainer.setPointerCapture(event.pointerId);
+		
+		drawAtPoint(event.clientX, event.clientY);
 	}
 
-	function handlePointerEnter(x: number, y: number, event: PointerEvent) {
+	function handlePointerMove(event: PointerEvent) {
 		if (!isDrawing) return;
-
-		if (event.buttons === 2) {
-			setPixel(x, y, COLOR_WHITE);
-		} else if (event.buttons === 1) {
-			setPixel(x, y, selectedColorIndex);
-		}
+		event.preventDefault();
+		drawAtPoint(event.clientX, event.clientY);
 	}
 
-	function handlePointerUp() {
+	function handlePointerUp(event: PointerEvent) {
+		if (isDrawing) {
+			gridContainer.releasePointerCapture(event.pointerId);
+		}
 		isDrawing = false;
+		isErasing = false;
+		lastPixelX = -1;
+		lastPixelY = -1;
 	}
 
 	function clearCanvas() {
@@ -78,8 +122,6 @@
 		event.preventDefault();
 	}
 </script>
-
-<svelte:window onpointerup={handlePointerUp} />
 
 <div class="pixel-editor">
 	<div class="palette-bar">
@@ -100,16 +142,23 @@
 	</div>
 
 	<div class="grid-wrapper">
-		<div class="grid-container" oncontextmenu={handleContextMenu}>
+		<div
+			class="grid-container"
+			bind:this={gridContainer}
+			onpointerdown={handlePointerDown}
+			onpointermove={handlePointerMove}
+			onpointerup={handlePointerUp}
+			onpointercancel={handlePointerUp}
+			onpointerleave={handlePointerUp}
+			oncontextmenu={handleContextMenu}
+		>
 			{#each grid as row, y}
 				{#each row as colorIndex, x}
-					<button
+					<div
 						class="pixel"
 						style="background-color: {getPixelColor(colorIndex)}"
-						onpointerdown={(e) => handlePointerDown(x, y, e)}
-						onpointerenter={(e) => handlePointerEnter(x, y, e)}
 						aria-label="Pixel {x},{y}"
-					></button>
+					></div>
 				{/each}
 			{/each}
 		</div>
@@ -229,21 +278,13 @@
 		background: #ccc;
 		touch-action: none;
 		user-select: none;
+		cursor: crosshair;
 	}
 
 	.pixel {
 		aspect-ratio: 1;
 		width: 100%;
-		border: none;
-		cursor: crosshair;
-		padding: 0;
-		transition: transform 0.05s ease;
-	}
-
-	.pixel:hover {
-		transform: scale(1.05);
-		z-index: 1;
-		position: relative;
+		pointer-events: none;
 	}
 
 	.actions {
