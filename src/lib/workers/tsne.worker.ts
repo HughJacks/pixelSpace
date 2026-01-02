@@ -16,6 +16,155 @@ function squaredDistance(a: number[], b: number[]): number {
 	return sum;
 }
 
+// ============================================================================
+// PCA (Principal Component Analysis) - Dimensionality reduction preprocessing
+// ============================================================================
+
+// Center data by subtracting mean from each dimension
+function centerData(data: number[][]): { centered: number[][]; means: number[] } {
+	const n = data.length;
+	const dims = data[0].length;
+	const means = new Array(dims).fill(0);
+
+	// Compute means
+	for (let i = 0; i < n; i++) {
+		for (let d = 0; d < dims; d++) {
+			means[d] += data[i][d];
+		}
+	}
+	for (let d = 0; d < dims; d++) {
+		means[d] /= n;
+	}
+
+	// Center the data
+	const centered = data.map((row) => row.map((val, d) => val - means[d]));
+
+	return { centered, means };
+}
+
+// Compute covariance matrix (dims x dims)
+function computeCovarianceMatrix(centered: number[][]): number[][] {
+	const n = centered.length;
+	const dims = centered[0].length;
+	const cov: number[][] = Array(dims)
+		.fill(null)
+		.map(() => Array(dims).fill(0));
+
+	for (let i = 0; i < dims; i++) {
+		for (let j = i; j < dims; j++) {
+			let sum = 0;
+			for (let k = 0; k < n; k++) {
+				sum += centered[k][i] * centered[k][j];
+			}
+			cov[i][j] = sum / (n - 1);
+			cov[j][i] = cov[i][j]; // Symmetric
+		}
+	}
+
+	return cov;
+}
+
+// Power iteration to find top eigenvector
+function powerIteration(matrix: number[][], iterations = 100): number[] {
+	const dims = matrix.length;
+	let vec = Array(dims)
+		.fill(0)
+		.map(() => Math.random() - 0.5);
+
+	for (let iter = 0; iter < iterations; iter++) {
+		// Multiply matrix by vector
+		const newVec = Array(dims).fill(0);
+		for (let i = 0; i < dims; i++) {
+			for (let j = 0; j < dims; j++) {
+				newVec[i] += matrix[i][j] * vec[j];
+			}
+		}
+
+		// Normalize
+		let norm = 0;
+		for (let i = 0; i < dims; i++) {
+			norm += newVec[i] * newVec[i];
+		}
+		norm = Math.sqrt(norm);
+
+		if (norm > 0) {
+			for (let i = 0; i < dims; i++) {
+				vec[i] = newVec[i] / norm;
+			}
+		}
+	}
+
+	return vec;
+}
+
+// Compute eigenvalue for an eigenvector
+function computeEigenvalue(matrix: number[][], eigenvector: number[]): number {
+	const dims = matrix.length;
+	let numerator = 0;
+	let denominator = 0;
+
+	for (let i = 0; i < dims; i++) {
+		let sum = 0;
+		for (let j = 0; j < dims; j++) {
+			sum += matrix[i][j] * eigenvector[j];
+		}
+		numerator += sum * eigenvector[i];
+		denominator += eigenvector[i] * eigenvector[i];
+	}
+
+	return numerator / denominator;
+}
+
+// Deflate matrix by removing component along eigenvector
+function deflateMatrix(matrix: number[][], eigenvector: number[], eigenvalue: number): number[][] {
+	const dims = matrix.length;
+	const deflated = matrix.map((row) => [...row]);
+
+	for (let i = 0; i < dims; i++) {
+		for (let j = 0; j < dims; j++) {
+			deflated[i][j] -= eigenvalue * eigenvector[i] * eigenvector[j];
+		}
+	}
+
+	return deflated;
+}
+
+// Main PCA function - reduces dimensionality while preserving variance
+function applyPCA(data: number[][], targetDims: number): number[][] {
+	if (data.length === 0) return [];
+	if (data[0].length <= targetDims) return data; // Already small enough
+
+	const { centered } = centerData(data);
+	let cov = computeCovarianceMatrix(centered);
+
+	// Find top k eigenvectors using deflation
+	const eigenvectors: number[][] = [];
+
+	for (let k = 0; k < targetDims; k++) {
+		const eigenvector = powerIteration(cov);
+		const eigenvalue = computeEigenvalue(cov, eigenvector);
+		eigenvectors.push(eigenvector);
+		cov = deflateMatrix(cov, eigenvector, eigenvalue);
+	}
+
+	// Project data onto eigenvectors
+	const projected = centered.map((row) => {
+		return eigenvectors.map((ev) => {
+			let dot = 0;
+			for (let i = 0; i < row.length; i++) {
+				dot += row[i] * ev[i];
+			}
+			return dot;
+		});
+	});
+
+	return projected;
+}
+
+// ============================================================================
+// t-SNE Core Algorithm
+// ============================================================================
+
 // Compute pairwise distances matrix
 function computeDistances(data: number[][]): number[][] {
 	const n = data.length;
@@ -195,11 +344,16 @@ function runTSNE(
 	if (n === 0) return [];
 	if (n === 1) return [[0, 0]];
 
+	// Step 0: Apply PCA to reduce dimensions (64D -> 16D)
+	// This removes noise, speeds up distance computation, and often improves results
+	const targetPcaDims = Math.min(16, data[0].length, n - 1);
+	const reducedData = applyPCA(data, targetPcaDims);
+
 	// Adjust perplexity if needed
 	const perplexity = Math.min(config.perplexity, Math.floor((n - 1) / 3));
 
-	// Step 1: Compute pairwise distances
-	const distances = computeDistances(data);
+	// Step 1: Compute pairwise distances (on PCA-reduced data)
+	const distances = computeDistances(reducedData);
 
 	// Step 2: Compute P matrix
 	const P_cond = computeProbabilities(distances, perplexity);

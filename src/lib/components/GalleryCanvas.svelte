@@ -9,15 +9,115 @@
 		const downsampled: number[] = [];
 		for (let by = 0; by < 8; by++) {
 			for (let bx = 0; bx < 8; bx++) {
-				const i = (by * 2) * 16 + (bx * 2);
-				const avg = (
-					pixels[i] + pixels[i + 1] +
-					pixels[i + 16] + pixels[i + 17]
-				) / 4;
+				const i = by * 2 * 16 + bx * 2;
+				const avg = (pixels[i] + pixels[i + 1] + pixels[i + 16] + pixels[i + 17]) / 4;
 				downsampled.push(avg);
 			}
 		}
 		return downsampled;
+	}
+
+	// ============================================================================
+	// Invariant Feature Extraction (translation, rotation, reflection invariant)
+	// ============================================================================
+
+	// Center a drawing by moving center of mass to grid center
+	function centerDrawing(pixels: number[]): number[] {
+		const size = GRID_SIZE;
+		const centered = new Array(size * size).fill(255);
+
+		// Find center of mass (weighted by darkness)
+		let sumX = 0,
+			sumY = 0,
+			totalWeight = 0;
+		for (let y = 0; y < size; y++) {
+			for (let x = 0; x < size; x++) {
+				const weight = 255 - pixels[y * size + x]; // Darker = more weight
+				sumX += x * weight;
+				sumY += y * weight;
+				totalWeight += weight;
+			}
+		}
+
+		if (totalWeight === 0) return pixels; // Empty drawing
+
+		const comX = sumX / totalWeight;
+		const comY = sumY / totalWeight;
+
+		// Shift to center
+		const shiftX = Math.round(size / 2 - comX);
+		const shiftY = Math.round(size / 2 - comY);
+
+		for (let y = 0; y < size; y++) {
+			for (let x = 0; x < size; x++) {
+				const srcX = x - shiftX;
+				const srcY = y - shiftY;
+				if (srcX >= 0 && srcX < size && srcY >= 0 && srcY < size) {
+					centered[y * size + x] = pixels[srcY * size + srcX];
+				}
+			}
+		}
+
+		return centered;
+	}
+
+	// Rotate 90° clockwise
+	function rotate90(pixels: number[], size: number): number[] {
+		const rotated = new Array(size * size);
+		for (let y = 0; y < size; y++) {
+			for (let x = 0; x < size; x++) {
+				rotated[x * size + (size - 1 - y)] = pixels[y * size + x];
+			}
+		}
+		return rotated;
+	}
+
+	// Flip horizontally
+	function flipH(pixels: number[], size: number): number[] {
+		const flipped = new Array(size * size);
+		for (let y = 0; y < size; y++) {
+			for (let x = 0; x < size; x++) {
+				flipped[y * size + (size - 1 - x)] = pixels[y * size + x];
+			}
+		}
+		return flipped;
+	}
+
+	// Generate all 8 orientation variants (4 rotations × 2 flips)
+	function getAllVariants(pixels: number[], size: number): number[][] {
+		const variants: number[][] = [];
+		let current = pixels;
+
+		// 4 rotations, each with original and flipped
+		for (let r = 0; r < 4; r++) {
+			variants.push(current);
+			variants.push(flipH(current, size));
+			current = rotate90(current, size);
+		}
+
+		return variants;
+	}
+
+	// Create invariant feature vector by averaging all orientations
+	function extractInvariantFeatures(pixels: number[]): number[] {
+		// Step 1: Center the drawing (translation invariance)
+		const centered = centerDrawing(pixels);
+
+		// Step 2: Get all 8 orientation variants (rotation + reflection invariance)
+		const variants = getAllVariants(centered, GRID_SIZE);
+
+		// Step 3: Downsample each variant
+		const downsampledVariants = variants.map((v) => downsample(v));
+
+		// Step 4: Average across all variants
+		const avgFeature = new Array(64).fill(0);
+		for (const variant of downsampledVariants) {
+			for (let i = 0; i < 64; i++) {
+				avgFeature[i] += variant[i] / 8;
+			}
+		}
+
+		return avgFeature;
 	}
 
 	interface Props {
@@ -31,7 +131,7 @@
 	let container: HTMLDivElement;
 
 	// Transform state
-	let scale = $state(1);
+	let scale = $state(1.5);
 	let offsetX = $state(0);
 	let offsetY = $state(0);
 
@@ -40,10 +140,15 @@
 	let lastMouseX = 0;
 	let lastMouseY = 0;
 
+	// Touch zoom state
+	let initialPinchDistance = 0;
+	let initialPinchScale = 1;
+	let activeTouches: Map<number, { x: number; y: number }> = new Map();
+
 	// Momentum and smoothing state
 	let velocityX = 0;
 	let velocityY = 0;
-	let targetScale = 1;
+	let targetScale = 1.5;
 	let targetOffsetX = 0;
 	let targetOffsetY = 0;
 	let animating = false;
@@ -65,7 +170,7 @@
 
 	// Drawing size on canvas
 	const DRAWING_SIZE = 48;
-	const DRAWING_PADDING = 4;
+	const DRAWING_PADDING = 1;
 	const MIN_SPACING = DRAWING_SIZE + DRAWING_PADDING * 2;
 
 	// Bounds of all drawings (for fit-all functionality)
@@ -316,14 +421,15 @@
 	function runTSNE() {
 		// Read drawings without creating reactive dependencies
 		const currentDrawings = untrack(() => drawings);
-		
+
 		if (!worker || currentDrawings.length === 0) return;
 
 		isComputing = true;
 		progress = 0;
 
-		// Downsample 16x16 to 8x8 for comparison (64 dimensions instead of 256)
-		const vectors = currentDrawings.map((d) => downsample([...d.pixels]));
+		// Extract invariant features (centered + averaged across 8 orientations)
+		// This makes clustering invariant to translation, rotation, and reflection
+		const vectors = currentDrawings.map((d) => extractInvariantFeatures([...d.pixels]));
 
 		const message: TSNEWorkerMessage = {
 			type: 'run',
@@ -419,75 +525,84 @@
 		}
 	}
 
-	// Cache for rendered drawing ImageBitmaps (much faster than recreating ImageData every frame)
-	const drawingImageCache = new Map<string, ImageBitmap>();
+	// Cache for SVG images (scales perfectly at any size)
+	const drawingImageCache = new Map<string, HTMLImageElement>();
 	
-	// Create an ImageBitmap for a drawing (cached)
-	async function getDrawingImage(drawing: Drawing): Promise<ImageBitmap | null> {
+	// Generate SVG string for a drawing's pixels
+	function generateSVG(pixels: number[]): string {
+		// Use run-length encoding for rows to reduce SVG size
+		let rects = '';
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			let x = 0;
+			while (x < GRID_SIZE) {
+				const gray = pixels[y * GRID_SIZE + x] ?? 255;
+				let width = 1;
+				
+				// Extend run while same color
+				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === gray) {
+					width++;
+				}
+				
+				// Only render non-white pixels (white is the background)
+				if (gray < 255) {
+					const hex = gray.toString(16).padStart(2, '0');
+					rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="#${hex}${hex}${hex}"/>`;
+				}
+				
+				x += width;
+			}
+		}
+		
+		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_SIZE} ${GRID_SIZE}" shape-rendering="crispEdges"><rect width="${GRID_SIZE}" height="${GRID_SIZE}" fill="#fff"/>${rects}</svg>`;
+	}
+	
+	// Create an Image element from SVG (cached)
+	function getDrawingImage(drawing: Drawing): Promise<HTMLImageElement> {
 		const cached = drawingImageCache.get(drawing.id);
-		if (cached) return cached;
+		if (cached) return Promise.resolve(cached);
 		
-		// Create ImageData and convert to ImageBitmap (only done once per drawing)
-		const imageData = new ImageData(GRID_SIZE, GRID_SIZE);
-		const data = imageData.data;
-		
-		for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-			const gray = drawing.pixels[i] ?? 255;
-			const offset = i * 4;
-			data[offset] = gray;     // R
-			data[offset + 1] = gray; // G
-			data[offset + 2] = gray; // B
-			data[offset + 3] = 255;  // A
-		}
-		
-		try {
-			const bitmap = await createImageBitmap(imageData);
-			drawingImageCache.set(drawing.id, bitmap);
-			return bitmap;
-		} catch {
-			return null;
-		}
+		return new Promise((resolve) => {
+			const svg = generateSVG(drawing.pixels);
+			const dataUrl = 'data:image/svg+xml;base64,' + btoa(svg);
+			
+			const img = new Image();
+			img.onload = () => {
+				drawingImageCache.set(drawing.id, img);
+				resolve(img);
+			};
+			img.onerror = () => {
+				// Fallback: create a simple placeholder
+				resolve(img);
+			};
+			img.src = dataUrl;
+		});
 	}
 	
 	// Pre-cache all drawing images when positions are ready
 	async function cacheAllDrawingImages(drawings: Drawing[]) {
 		const promises = drawings.map(d => getDrawingImage(d));
 		await Promise.all(promises);
+		scheduleRender(); // Re-render once all images are cached
 	}
 
 	function renderDrawing(drawing: DrawingWithPosition, screenX: number, screenY: number, size: number) {
 		if (!ctx) return;
 
-		const x = Math.round(screenX - size / 2);
-		const y = Math.round(screenY - size / 2);
 		const drawSize = Math.round(size);
+		const x = Math.round(screenX - drawSize / 2);
+		const y = Math.round(screenY - drawSize / 2);
 		
-		// Use cached ImageBitmap if available
+		// Use cached SVG image if available
 		const cached = drawingImageCache.get(drawing.id);
 		if (cached) {
 			ctx.drawImage(cached, x, y, drawSize, drawSize);
 			return;
 		}
 		
-		// Fallback: draw directly if not cached yet (shouldn't happen often)
-		const tempCanvas = new OffscreenCanvas(GRID_SIZE, GRID_SIZE);
-		const tempCtx = tempCanvas.getContext('2d');
-		if (!tempCtx) return;
-		
-		const imageData = tempCtx.createImageData(GRID_SIZE, GRID_SIZE);
-		const data = imageData.data;
-		
-		for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-			const gray = drawing.pixels[i] ?? 255;
-			const offset = i * 4;
-			data[offset] = gray;     // R
-			data[offset + 1] = gray; // G
-			data[offset + 2] = gray; // B
-			data[offset + 3] = 255;  // A
-		}
-		
-		tempCtx.putImageData(imageData, 0, 0);
-		ctx.drawImage(tempCanvas, x, y, drawSize, drawSize);
+		// Fallback: draw a placeholder while loading
+		ctx.fillStyle = '#f0f0f0';
+		ctx.fillRect(x, y, drawSize, drawSize);
 		
 		// Cache for next time (async, don't wait)
 		getDrawingImage(drawing);
@@ -594,6 +709,70 @@
 	function handlePointerLeave() {
 		showPopup = false;
 	}
+
+	// Touch event handlers for pinch-to-zoom
+	function handleTouchStart(event: TouchEvent) {
+		for (const touch of event.changedTouches) {
+			activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
+		}
+
+		if (activeTouches.size === 2) {
+			// Start pinch gesture
+			const touches = Array.from(activeTouches.values());
+			const dx = touches[1].x - touches[0].x;
+			const dy = touches[1].y - touches[0].y;
+			initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+			initialPinchScale = scale;
+		}
+	}
+
+	function handleTouchMove(event: TouchEvent) {
+		// Update touch positions
+		for (const touch of event.changedTouches) {
+			activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
+		}
+
+		if (activeTouches.size === 2 && initialPinchDistance > 0) {
+			event.preventDefault();
+			
+			const touches = Array.from(activeTouches.values());
+			const dx = touches[1].x - touches[0].x;
+			const dy = touches[1].y - touches[0].y;
+			const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+			// Calculate new scale based on pinch
+			const scaleChange = currentDistance / initialPinchDistance;
+			const minScale = Math.min(getMinScaleForBounds(), 1);
+			const newScale = Math.max(minScale, Math.min(5, initialPinchScale * scaleChange));
+
+			// Get pinch center point
+			const rect = canvas.getBoundingClientRect();
+			const centerX = (touches[0].x + touches[1].x) / 2 - rect.left;
+			const centerY = (touches[0].y + touches[1].y) / 2 - rect.top;
+
+			// Zoom toward pinch center
+			const scaleRatio = newScale / scale;
+			offsetX = centerX - (centerX - offsetX) * scaleRatio;
+			offsetY = centerY - (centerY - offsetY) * scaleRatio;
+			scale = newScale;
+
+			targetScale = scale;
+			targetOffsetX = offsetX;
+			targetOffsetY = offsetY;
+
+			scheduleRender();
+		}
+	}
+
+	function handleTouchEnd(event: TouchEvent) {
+		for (const touch of event.changedTouches) {
+			activeTouches.delete(touch.identifier);
+		}
+
+		if (activeTouches.size < 2) {
+			initialPinchDistance = 0;
+		}
+	}
 </script>
 
 <svelte:window onresize={resizeCanvas} />
@@ -618,14 +797,15 @@
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
 		onpointerleave={handlePointerLeave}
+		ontouchstart={handleTouchStart}
+		ontouchmove={handleTouchMove}
+		ontouchend={handleTouchEnd}
+		ontouchcancel={handleTouchEnd}
 	></canvas>
 
 	<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup} />
 
 	<div class="controls">
-		<span class="zoom-level">{Math.round(scale * 100)}%</span>
-		<button onclick={() => { targetScale = Math.min(5, targetScale * 1.3); startAnimation(); }}>+</button>
-		<button onclick={() => { targetScale = Math.max(getMinScaleForBounds(), targetScale / 1.3); startAnimation(); }}>−</button>
 		<button onclick={fitAllInView}>Fit All</button>
 	</div>
 
@@ -707,44 +887,23 @@
 		position: absolute;
 		bottom: 16px;
 		right: 16px;
-		display: flex;
-		gap: 8px;
-		align-items: center;
-		background: rgba(255, 255, 255, 0.95);
-		padding: 8px 12px;
-		border-radius: 8px;
-		border: 1px solid #e0e0e0;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-	}
-
-	.zoom-level {
-		color: #666;
-		font-size: 0.85rem;
-		font-family: monospace;
-		min-width: 48px;
 	}
 
 	.controls button {
-		background: #fff;
-		border: 1px solid #ccc;
+		background: rgba(255, 255, 255, 0.95);
+		border: 1px solid #e0e0e0;
 		color: #000;
-		width: 32px;
-		height: 32px;
-		border-radius: 6px;
+		padding: 8px 14px;
+		border-radius: 8px;
 		cursor: pointer;
-		font-size: 1.1rem;
+		font-size: 0.85rem;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 		transition: all 0.15s ease;
 	}
 
 	.controls button:hover {
 		background: #f0f0f0;
 		border-color: #999;
-	}
-
-	.controls button:last-child {
-		width: auto;
-		padding: 0 12px;
-		font-size: 0.85rem;
 	}
 
 	.empty-state {
