@@ -1,132 +1,225 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import type { Drawing, DrawingWithPosition, TSNEWorkerMessage, TSNEWorkerResponse } from '$lib/types';
-	import { GRID_SIZE, PALETTE, colorToHex, isLegacyBWFormat, convertLegacyPixels, COLOR_WHITE, COLOR_BLACK, pixelsToEncodedValues } from '$lib/palette';
+	import type { Drawing, DrawingWithPosition, UMAPWorkerMessage, UMAPWorkerResponse } from '$lib/types';
+	import { GRID_SIZE, PALETTE, colorToHex, isLegacyBWFormat, convertLegacyPixels, COLOR_WHITE, COLOR_BLACK, NUM_COLORS } from '$lib/palette';
 	import DrawingPopup from './DrawingPopup.svelte';
 
 	// ============================================================================
-	// Feature Extraction (translation, rotation, reflection invariant)
-	// Uses single-value color encoding for compact 64-feature vectors
+	// Enhanced Feature Extraction for Strong Clustering
+	// Combines spatial, color distribution, adjacency, and symmetry features
 	// ============================================================================
 
-	// Downsample 16x16 to 8x8 by averaging 2x2 blocks
-	function downsample(pixels: number[]): number[] {
-		const downsampled: number[] = [];
-		for (let by = 0; by < 8; by++) {
-			for (let bx = 0; bx < 8; bx++) {
-				const i = by * 2 * 16 + bx * 2;
-				const avg = (pixels[i] + pixels[i + 1] + pixels[i + 16] + pixels[i + 17]) / 4;
-				downsampled.push(avg);
-			}
-		}
-		return downsampled;
+	// Normalize pixels to color index format (handles legacy BW data)
+	function normalizePixels(pixels: number[]): number[] {
+		return isLegacyBWFormat(pixels) ? convertLegacyPixels(pixels) : pixels;
 	}
 
-	// Center a drawing by moving center of mass to grid center
-	// Uses all non-white pixels for center of mass calculation
-	function centerDrawing(pixels: number[], encodedValues: number[]): number[] {
-		const size = GRID_SIZE;
-		const whiteEncoding = 255; // White's encoding value
-		const centered = new Array(size * size).fill(whiteEncoding);
-
-		// Find center of mass (weighted by non-white encoded values)
-		let sumX = 0,
-			sumY = 0,
-			totalWeight = 0;
-		for (let y = 0; y < size; y++) {
-			for (let x = 0; x < size; x++) {
-				const val = encodedValues[y * size + x];
-				// Non-white pixels contribute to center of mass
-				const weight = val !== whiteEncoding ? 1 : 0;
-				sumX += x * weight;
-				sumY += y * weight;
-				totalWeight += weight;
-			}
+	// --- Color Histogram (8 features) ---
+	// Distribution of colors used in the drawing
+	function colorHistogram(pixels: number[]): number[] {
+		const hist = new Array(NUM_COLORS).fill(0);
+		for (const p of pixels) {
+			hist[p]++;
 		}
+		// Normalize to [0, 1]
+		const total = pixels.length;
+		return hist.map(h => h / total);
+	}
 
-		if (totalWeight === 0) return encodedValues; // Empty drawing
-
-		const comX = sumX / totalWeight;
-		const comY = sumY / totalWeight;
-
-		// Shift to center
-		const shiftX = Math.round(size / 2 - comX);
-		const shiftY = Math.round(size / 2 - comY);
-
-		for (let y = 0; y < size; y++) {
-			for (let x = 0; x < size; x++) {
-				const srcX = x - shiftX;
-				const srcY = y - shiftY;
-				if (srcX >= 0 && srcX < size && srcY >= 0 && srcY < size) {
-					centered[y * size + x] = encodedValues[srcY * size + srcX];
+	// --- Color Adjacency Matrix (64 features) ---
+	// Captures which colors appear next to each other
+	function colorAdjacencyMatrix(pixels: number[]): number[] {
+		const adj = Array(NUM_COLORS).fill(null).map(() => Array(NUM_COLORS).fill(0));
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			for (let x = 0; x < GRID_SIZE; x++) {
+				const c1 = pixels[y * GRID_SIZE + x];
+				// Check right neighbor
+				if (x < GRID_SIZE - 1) {
+					const c2 = pixels[y * GRID_SIZE + x + 1];
+					adj[c1][c2]++;
+					adj[c2][c1]++;
+				}
+				// Check bottom neighbor
+				if (y < GRID_SIZE - 1) {
+					const c2 = pixels[(y + 1) * GRID_SIZE + x];
+					adj[c1][c2]++;
+					adj[c2][c1]++;
 				}
 			}
 		}
-
-		return centered;
-	}
-
-	// Rotate 90° clockwise
-	function rotate90(pixels: number[], size: number): number[] {
-		const rotated = new Array(size * size);
-		for (let y = 0; y < size; y++) {
-			for (let x = 0; x < size; x++) {
-				rotated[x * size + (size - 1 - y)] = pixels[y * size + x];
-			}
-		}
-		return rotated;
-	}
-
-	// Flip horizontally
-	function flipH(pixels: number[], size: number): number[] {
-		const flipped = new Array(size * size);
-		for (let y = 0; y < size; y++) {
-			for (let x = 0; x < size; x++) {
-				flipped[y * size + (size - 1 - x)] = pixels[y * size + x];
-			}
-		}
-		return flipped;
-	}
-
-	// Generate all 8 orientation variants (4 rotations × 2 flips)
-	function getAllVariants(pixels: number[], size: number): number[][] {
-		const variants: number[][] = [];
-		let current = pixels;
-
-		// 4 rotations, each with original and flipped
-		for (let r = 0; r < 4; r++) {
-			variants.push(current);
-			variants.push(flipH(current, size));
-			current = rotate90(current, size);
-		}
-
-		return variants;
-	}
-
-	// Create invariant feature vector using single-value color encoding
-	// Returns 64 features (8x8 downsampled, averaged across 8 orientations)
-	function extractInvariantFeatures(pixels: number[]): number[] {
-		// Convert pixel indices to encoded values (0-255 range based on color)
-		const encodedValues = pixelsToEncodedValues(pixels);
 		
-		// Step 1: Center the drawing (translation invariance)
-		const centered = centerDrawing(pixels, encodedValues);
+		// Flatten and normalize
+		const flat = adj.flat();
+		const sum = flat.reduce((a, b) => a + b, 0) || 1;
+		return flat.map(v => v / sum);
+	}
 
-		// Step 2: Get all 8 orientation variants (rotation + reflection invariance)
-		const variants = getAllVariants(centered, GRID_SIZE);
-
-		// Step 3: Downsample each variant to 8x8
-		const downsampledVariants = variants.map(v => downsample(v));
-
-		// Step 4: Average across all variants for rotation/reflection invariance
-		const avgFeature = new Array(64).fill(0);
-		for (const variant of downsampledVariants) {
-			for (let i = 0; i < 64; i++) {
-				avgFeature[i] += variant[i] / 8;
+	// --- Symmetry Features (4 features) ---
+	// Horizontal, vertical, diagonal, and rotational symmetry scores
+	function symmetryFeatures(pixels: number[]): number[] {
+		let hSym = 0, vSym = 0, dSym = 0, rotSym = 0;
+		const total = GRID_SIZE * GRID_SIZE;
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			for (let x = 0; x < GRID_SIZE; x++) {
+				const p = pixels[y * GRID_SIZE + x];
+				// Horizontal symmetry (left-right)
+				if (p === pixels[y * GRID_SIZE + (GRID_SIZE - 1 - x)]) hSym++;
+				// Vertical symmetry (top-bottom)
+				if (p === pixels[(GRID_SIZE - 1 - y) * GRID_SIZE + x]) vSym++;
+				// Diagonal symmetry (transpose)
+				if (p === pixels[x * GRID_SIZE + y]) dSym++;
+				// 180° rotational symmetry
+				if (p === pixels[(GRID_SIZE - 1 - y) * GRID_SIZE + (GRID_SIZE - 1 - x)]) rotSym++;
 			}
 		}
+		
+		return [hSym / total, vSym / total, dSym / total, rotSym / total];
+	}
 
-		return avgFeature;
+	// --- Structural Features (6 features) ---
+	// Fill ratio, edge density, bounding box, and dispersion
+	function structuralFeatures(pixels: number[]): number[] {
+		let nonWhiteCount = 0;
+		let edgeCount = 0;
+		let minX = GRID_SIZE, maxX = 0, minY = GRID_SIZE, maxY = 0;
+		let sumX = 0, sumY = 0;
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			for (let x = 0; x < GRID_SIZE; x++) {
+				const p = pixels[y * GRID_SIZE + x];
+				if (p !== COLOR_WHITE) {
+					nonWhiteCount++;
+					sumX += x;
+					sumY += y;
+					minX = Math.min(minX, x);
+					maxX = Math.max(maxX, x);
+					minY = Math.min(minY, y);
+					maxY = Math.max(maxY, y);
+					
+					// Count color transitions (edges)
+					if (x < GRID_SIZE - 1 && pixels[y * GRID_SIZE + x + 1] !== p) edgeCount++;
+					if (y < GRID_SIZE - 1 && pixels[(y + 1) * GRID_SIZE + x] !== p) edgeCount++;
+				}
+			}
+		}
+		
+		const total = GRID_SIZE * GRID_SIZE;
+		const fillRatio = nonWhiteCount / total;
+		const edgeDensity = edgeCount / (2 * (GRID_SIZE - 1) * GRID_SIZE); // Normalize by max edges
+		
+		// Bounding box aspect ratio and coverage
+		const bbWidth = maxX >= minX ? maxX - minX + 1 : 0;
+		const bbHeight = maxY >= minY ? maxY - minY + 1 : 0;
+		const bbAspect = bbHeight > 0 ? bbWidth / bbHeight : 1;
+		const bbCoverage = (bbWidth * bbHeight) / total;
+		
+		// Centroid dispersion (how spread out the drawing is from its center)
+		let dispersion = 0;
+		if (nonWhiteCount > 0) {
+			const centX = sumX / nonWhiteCount;
+			const centY = sumY / nonWhiteCount;
+			for (let y = 0; y < GRID_SIZE; y++) {
+				for (let x = 0; x < GRID_SIZE; x++) {
+					if (pixels[y * GRID_SIZE + x] !== COLOR_WHITE) {
+						dispersion += Math.sqrt((x - centX) ** 2 + (y - centY) ** 2);
+					}
+				}
+			}
+			dispersion /= (nonWhiteCount * GRID_SIZE); // Normalize
+		}
+		
+		return [fillRatio, edgeDensity, bbAspect / 2, bbCoverage, dispersion, nonWhiteCount / total];
+	}
+
+	// --- Connected Components (4 features) ---
+	// Number and size distribution of distinct regions
+	function connectedComponentFeatures(pixels: number[]): number[] {
+		const visited = new Set<number>();
+		const componentSizes: number[] = [];
+		
+		function floodFill(start: number, color: number): number {
+			const stack = [start];
+			let size = 0;
+			while (stack.length > 0) {
+				const idx = stack.pop()!;
+				if (visited.has(idx) || pixels[idx] !== color) continue;
+				visited.add(idx);
+				size++;
+				
+				const x = idx % GRID_SIZE, y = Math.floor(idx / GRID_SIZE);
+				if (x > 0) stack.push(idx - 1);
+				if (x < GRID_SIZE - 1) stack.push(idx + 1);
+				if (y > 0) stack.push(idx - GRID_SIZE);
+				if (y < GRID_SIZE - 1) stack.push(idx + GRID_SIZE);
+			}
+			return size;
+		}
+		
+		for (let i = 0; i < pixels.length; i++) {
+			if (!visited.has(i) && pixels[i] !== COLOR_WHITE) {
+				componentSizes.push(floodFill(i, pixels[i]));
+			}
+		}
+		
+		const total = pixels.length;
+		const numComponents = componentSizes.length;
+		
+		if (numComponents === 0) {
+			return [0, 0, 0, 0];
+		}
+		
+		const largest = Math.max(...componentSizes) / total;
+		const smallest = Math.min(...componentSizes) / total;
+		const mean = componentSizes.reduce((a, b) => a + b, 0) / numComponents / total;
+		
+		return [
+			Math.min(numComponents / 10, 1), // Normalized component count (cap at 10)
+			largest,
+			smallest,
+			mean
+		];
+	}
+
+	// --- Downsampled Spatial Features (16 features) ---
+	// 4x4 downsampled non-white density per region
+	function downsampledSpatial(pixels: number[]): number[] {
+		const features: number[] = [];
+		const blockSize = GRID_SIZE / 4; // 4x4 blocks
+		
+		for (let by = 0; by < 4; by++) {
+			for (let bx = 0; bx < 4; bx++) {
+				let nonWhite = 0;
+				for (let dy = 0; dy < blockSize; dy++) {
+					for (let dx = 0; dx < blockSize; dx++) {
+						const x = bx * blockSize + dx;
+						const y = by * blockSize + dy;
+						if (pixels[y * GRID_SIZE + x] !== COLOR_WHITE) {
+							nonWhite++;
+						}
+					}
+				}
+				features.push(nonWhite / (blockSize * blockSize));
+			}
+		}
+		
+		return features;
+	}
+
+	// --- Combined Enhanced Feature Extraction ---
+	// Total: 8 + 64 + 4 + 6 + 4 + 16 = 102 features
+	function extractEnhancedFeatures(pixels: number[]): number[] {
+		const normalized = normalizePixels(pixels);
+		
+		return [
+			...colorHistogram(normalized),           // 8: color distribution
+			...colorAdjacencyMatrix(normalized),     // 64: color relationships
+			...symmetryFeatures(normalized),         // 4: symmetry scores
+			...structuralFeatures(normalized),       // 6: shape metrics
+			...connectedComponentFeatures(normalized), // 4: region analysis
+			...downsampledSpatial(normalized)        // 16: spatial density
+		];
 	}
 
 	interface Props {
@@ -210,7 +303,7 @@
 	let mouseY = $state(0);
 	let showPopup = $state(false);
 
-	// t-SNE state
+	// UMAP state
 	let positions: Map<string, { x: number; y: number }> = $state(new Map());
 	let isComputing = $state(false);
 	let progress = $state(0);
@@ -365,15 +458,18 @@
 		}
 		resizeCanvas();
 
-		// Initialize t-SNE worker
-		worker = new Worker(new URL('$lib/workers/tsne.worker.ts', import.meta.url), {
+		// Initialize UMAP worker
+		worker = new Worker(new URL('$lib/workers/umap.worker.ts', import.meta.url), {
 			type: 'module'
 		});
 
-		worker.onmessage = (event: MessageEvent<TSNEWorkerResponse>) => {
+		worker.onmessage = (event: MessageEvent<UMAPWorkerResponse>) => {
 			const data = event.data;
 			
-			if (data.type === 'progress') {
+			if (data.type === 'log') {
+				// Optional: log UMAP progress messages
+				// console.log('[UMAP]', data.message);
+			} else if (data.type === 'progress') {
 				progress = ((data.iteration || 0) / (data.totalIterations || 1)) * 100;
 			} else if (data.type === 'done' && data.embeddings) {
 				// Map embeddings to drawing IDs
@@ -434,14 +530,14 @@
 		};
 	});
 
-	// Track drawings length to trigger t-SNE, but use untrack for the actual computation
+	// Track drawings length to trigger UMAP, but use untrack for the actual computation
 	// to avoid creating deep reactive dependencies on every pixel value
 	let lastDrawingsLength = 0;
 	
 	$effect(() => {
 		const currentLength = drawings.length;
 		
-		// Only run t-SNE if:
+		// Only run UMAP if:
 		// 1. We have drawings
 		// 2. Worker is ready
 		// 3. Not already computing
@@ -449,7 +545,7 @@
 		if (currentLength > 0 && worker && !isComputing && currentLength !== lastDrawingsLength) {
 			lastDrawingsLength = currentLength;
 			// Use untrack to read drawings without creating deep dependencies
-			untrack(() => runTSNE());
+			untrack(() => runUMAP());
 		}
 	});
 
@@ -466,7 +562,7 @@
 		}
 	});
 
-	function runTSNE() {
+	function runUMAP() {
 		// Read drawings without creating reactive dependencies
 		const currentDrawings = untrack(() => drawings);
 
@@ -475,17 +571,22 @@
 		isComputing = true;
 		progress = 0;
 
-		// Extract invariant features (centered + averaged across 8 orientations)
-		// This makes clustering invariant to translation, rotation, and reflection
-		const vectors = currentDrawings.map((d) => extractInvariantFeatures([...d.pixels]));
+		// Extract enhanced feature vectors for better clustering
+		// 102 features: color histogram, adjacency, symmetry, structure, components, spatial
+		const vectors = currentDrawings.map((d) => extractEnhancedFeatures([...d.pixels]));
 
-		const message: TSNEWorkerMessage = {
+		// Dynamic config based on dataset size
+		const n = vectors.length;
+		const nNeighbors = Math.min(15, Math.max(5, Math.floor(n / 5)));
+		const nEpochs = n < 50 ? 100 : n < 200 ? 150 : 200;
+
+		const message: UMAPWorkerMessage = {
 			type: 'run',
 			vectors,
 			config: {
-				perplexity: 30,
-				iterations: 500,
-				learningRate: 100
+				nNeighbors,
+				minDist: 0.1,
+				nEpochs
 			}
 		};
 
@@ -992,7 +1093,7 @@
 	{#if isComputing}
 		<div class="loading-overlay">
 			<div class="loading-content">
-				<p class="loading-title">Computing t-SNE layout</p>
+				<p class="loading-title">Computing UMAP layout</p>
 				<div class="progress-bar">
 					<div class="progress-fill" style="width: {progress}%"></div>
 				</div>
