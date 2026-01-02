@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import type { Drawing, DrawingWithPosition, TSNEWorkerMessage, TSNEWorkerResponse } from '$lib/types';
-	import { GRID_SIZE } from '$lib/palette';
+	import { GRID_SIZE, PALETTE, colorToHex, isLegacyBWFormat, convertLegacyPixels, COLOR_WHITE, pixelsToEncodedValues } from '$lib/palette';
 	import DrawingPopup from './DrawingPopup.svelte';
+
+	// ============================================================================
+	// Feature Extraction (translation, rotation, reflection invariant)
+	// Uses single-value color encoding for compact 64-feature vectors
+	// ============================================================================
 
 	// Downsample 16x16 to 8x8 by averaging 2x2 blocks
 	function downsample(pixels: number[]): number[] {
@@ -17,29 +22,29 @@
 		return downsampled;
 	}
 
-	// ============================================================================
-	// Invariant Feature Extraction (translation, rotation, reflection invariant)
-	// ============================================================================
-
 	// Center a drawing by moving center of mass to grid center
-	function centerDrawing(pixels: number[]): number[] {
+	// Uses all non-white pixels for center of mass calculation
+	function centerDrawing(pixels: number[], encodedValues: number[]): number[] {
 		const size = GRID_SIZE;
-		const centered = new Array(size * size).fill(255);
+		const whiteEncoding = 255; // White's encoding value
+		const centered = new Array(size * size).fill(whiteEncoding);
 
-		// Find center of mass (weighted by darkness)
+		// Find center of mass (weighted by non-white encoded values)
 		let sumX = 0,
 			sumY = 0,
 			totalWeight = 0;
 		for (let y = 0; y < size; y++) {
 			for (let x = 0; x < size; x++) {
-				const weight = 255 - pixels[y * size + x]; // Darker = more weight
+				const val = encodedValues[y * size + x];
+				// Non-white pixels contribute to center of mass
+				const weight = val !== whiteEncoding ? 1 : 0;
 				sumX += x * weight;
 				sumY += y * weight;
 				totalWeight += weight;
 			}
 		}
 
-		if (totalWeight === 0) return pixels; // Empty drawing
+		if (totalWeight === 0) return encodedValues; // Empty drawing
 
 		const comX = sumX / totalWeight;
 		const comY = sumY / totalWeight;
@@ -53,7 +58,7 @@
 				const srcX = x - shiftX;
 				const srcY = y - shiftY;
 				if (srcX >= 0 && srcX < size && srcY >= 0 && srcY < size) {
-					centered[y * size + x] = pixels[srcY * size + srcX];
+					centered[y * size + x] = encodedValues[srcY * size + srcX];
 				}
 			}
 		}
@@ -98,18 +103,22 @@
 		return variants;
 	}
 
-	// Create invariant feature vector by averaging all orientations
+	// Create invariant feature vector using single-value color encoding
+	// Returns 64 features (8x8 downsampled, averaged across 8 orientations)
 	function extractInvariantFeatures(pixels: number[]): number[] {
+		// Convert pixel indices to encoded values (0-255 range based on color)
+		const encodedValues = pixelsToEncodedValues(pixels);
+		
 		// Step 1: Center the drawing (translation invariance)
-		const centered = centerDrawing(pixels);
+		const centered = centerDrawing(pixels, encodedValues);
 
 		// Step 2: Get all 8 orientation variants (rotation + reflection invariance)
 		const variants = getAllVariants(centered, GRID_SIZE);
 
-		// Step 3: Downsample each variant
-		const downsampledVariants = variants.map((v) => downsample(v));
+		// Step 3: Downsample each variant to 8x8
+		const downsampledVariants = variants.map(v => downsample(v));
 
-		// Step 4: Average across all variants
+		// Step 4: Average across all variants for rotation/reflection invariance
 		const avgFeature = new Array(64).fill(0);
 		for (const variant of downsampledVariants) {
 			for (let i = 0; i < 64; i++) {
@@ -122,9 +131,36 @@
 
 	interface Props {
 		drawings: Drawing[];
+		onCenterOnDrawing?: (fn: (drawingId: string) => void) => void;
 	}
 
-	let { drawings }: Props = $props();
+	let { drawings, onCenterOnDrawing }: Props = $props();
+
+	// Expose centerOnDrawing method to parent
+	$effect(() => {
+		if (onCenterOnDrawing) {
+			onCenterOnDrawing(centerOnDrawing);
+		}
+	});
+
+	// Center the view on a specific drawing by ID
+	function centerOnDrawing(drawingId: string) {
+		const pos = positions.get(drawingId);
+		if (!pos) return;
+
+		// Animate to center on the drawing
+		targetOffsetX = canvas.width / 2 - pos.x * targetScale;
+		targetOffsetY = canvas.height / 2 - pos.y * targetScale;
+		
+		// Zoom in a bit for better view
+		targetScale = Math.max(targetScale, 2);
+		
+		// Stop any momentum
+		velocityX = 0;
+		velocityY = 0;
+		
+		startAnimation();
+	}
 
 	let canvas: HTMLCanvasElement;
 	let ctx: CanvasRenderingContext2D | null = null;
@@ -528,6 +564,19 @@
 	// Cache for SVG images (scales perfectly at any size)
 	const drawingImageCache = new Map<string, HTMLImageElement>();
 	
+	// Get hex color for a pixel value (handles both legacy BW and color indices)
+	function getPixelHexColor(pixelValue: number): string {
+		// Legacy BW format uses values like 0 and 255
+		if (pixelValue > 7) {
+			// Legacy grayscale - threshold to black or white
+			const colorIdx = pixelValue <= 127 ? COLOR_BLACK : COLOR_WHITE;
+			return colorToHex(PALETTE[colorIdx]);
+		}
+		// Color index format (0-7)
+		const color = PALETTE[pixelValue] ?? PALETTE[COLOR_WHITE];
+		return colorToHex(color);
+	}
+	
 	// Generate SVG string for a drawing's pixels
 	function generateSVG(pixels: number[]): string {
 		// Use run-length encoding for rows to reduce SVG size
@@ -536,18 +585,20 @@
 		for (let y = 0; y < GRID_SIZE; y++) {
 			let x = 0;
 			while (x < GRID_SIZE) {
-				const gray = pixels[y * GRID_SIZE + x] ?? 255;
+				const pixelValue = pixels[y * GRID_SIZE + x] ?? COLOR_WHITE;
 				let width = 1;
 				
 				// Extend run while same color
-				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === gray) {
+				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === pixelValue) {
 					width++;
 				}
 				
 				// Only render non-white pixels (white is the background)
-				if (gray < 255) {
-					const hex = gray.toString(16).padStart(2, '0');
-					rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="#${hex}${hex}${hex}"/>`;
+				// For legacy format: skip 255, for color index: skip 1
+				const isWhite = pixelValue === COLOR_WHITE || pixelValue === 255;
+				if (!isWhite) {
+					const hexColor = getPixelHexColor(pixelValue);
+					rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="${hexColor}"/>`;
 				}
 				
 				x += width;
@@ -604,8 +655,10 @@
 		ctx.fillStyle = '#f0f0f0';
 		ctx.fillRect(x, y, drawSize, drawSize);
 		
-		// Cache for next time (async, don't wait)
-		getDrawingImage(drawing);
+		// Cache and re-render when ready
+		getDrawingImage(drawing).then(() => {
+			scheduleRender();
+		});
 	}
 
 	function handleWheel(event: WheelEvent) {

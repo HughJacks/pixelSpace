@@ -4,7 +4,7 @@ export interface Drawing {
 	id: string;
 	name: string;
 	creator: string;
-	pixels: number[]; // 256 values (16x16 grayscale, 0=black, 255=white)
+	pixels: number[]; // 256 values (16x16 color indices 0-7: black, white, red, green, blue, yellow, cyan, magenta)
 	created: string;
 }
 

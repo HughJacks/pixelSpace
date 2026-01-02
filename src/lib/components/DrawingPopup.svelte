@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Drawing } from '$lib/types';
-	import { GRID_SIZE } from '$lib/palette';
+	import { GRID_SIZE, PALETTE, colorToHex, COLOR_WHITE } from '$lib/palette';
 
 	interface Props {
 		drawing: Drawing | null;
@@ -11,11 +11,24 @@
 
 	let { drawing, x, y, visible }: Props = $props();
 
-	// Render pixels to a small canvas-like grid (grayscale)
+	// Get hex color for a pixel value (handles both legacy BW and color indices)
+	function getPixelHexColor(pixelValue: number): string {
+		// Legacy BW format uses values like 0 and 255
+		if (pixelValue > 7) {
+			// Legacy grayscale - threshold to black or white
+			const colorIdx = pixelValue <= 127 ? COLOR_BLACK : COLOR_WHITE;
+			return colorToHex(PALETTE[colorIdx]);
+		}
+		// Color index format (0-7)
+		const color = PALETTE[pixelValue] ?? PALETTE[COLOR_WHITE];
+		return colorToHex(color);
+	}
+
+	// Render pixels with color support
 	function getPixelStyle(idx: number): string {
 		if (!drawing) return 'background-color: #000';
-		const gray = drawing.pixels[idx] ?? 255;
-		return `background-color: rgb(${gray}, ${gray}, ${gray})`;
+		const pixelValue = drawing.pixels[idx] ?? COLOR_WHITE;
+		return `background-color: ${getPixelHexColor(pixelValue)}`;
 	}
 
 	function formatDate(dateStr: string): string {

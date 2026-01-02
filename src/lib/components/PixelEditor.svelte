@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { GRID_SIZE, getDefaultPixels } from '$lib/palette';
+	import { GRID_SIZE, getDefaultPixels, PALETTE, colorToHex, COLOR_WHITE } from '$lib/palette';
 
 	interface Props {
 		pixels?: number[];
@@ -11,27 +11,32 @@
 	// Local copy of pixels to avoid mutating props directly
 	let pixels = $state([...pixelsProp]);
 
-	// Tool state: 'draw' = black, 'erase' = white
-	let currentTool: 'draw' | 'erase' = $state('draw');
+	// Currently selected color index (0 = black by default)
+	let selectedColorIndex = $state(0);
 	let isDrawing = $state(false);
 
-	// Convert flat array to 2D grid for easier rendering (grayscale)
+	// Convert flat array to 2D grid for easier rendering (color indices)
 	let grid = $derived.by(() => {
 		const result: number[][] = [];
 		for (let y = 0; y < GRID_SIZE; y++) {
 			const row: number[] = [];
 			for (let x = 0; x < GRID_SIZE; x++) {
 				const idx = y * GRID_SIZE + x;
-				row.push(pixels[idx] ?? 255);
+				row.push(pixels[idx] ?? COLOR_WHITE);
 			}
 			result.push(row);
 		}
 		return result;
 	});
 
-	function setPixel(x: number, y: number, tool: 'draw' | 'erase') {
+	function getPixelColor(colorIndex: number): string {
+		const color = PALETTE[colorIndex] ?? PALETTE[COLOR_WHITE];
+		return colorToHex(color);
+	}
+
+	function setPixel(x: number, y: number, colorIndex: number) {
 		const idx = y * GRID_SIZE + x;
-		pixels[idx] = tool === 'draw' ? 0 : 255;
+		pixels[idx] = colorIndex;
 		pixels = [...pixels];
 	}
 
@@ -39,11 +44,11 @@
 		event.preventDefault();
 		isDrawing = true;
 
-		// Right click always erases
+		// Right click always erases (white)
 		if (event.button === 2) {
-			setPixel(x, y, 'erase');
+			setPixel(x, y, COLOR_WHITE);
 		} else {
-			setPixel(x, y, currentTool);
+			setPixel(x, y, selectedColorIndex);
 		}
 	}
 
@@ -51,9 +56,9 @@
 		if (!isDrawing) return;
 
 		if (event.buttons === 2) {
-			setPixel(x, y, 'erase');
+			setPixel(x, y, COLOR_WHITE);
 		} else if (event.buttons === 1) {
-			setPixel(x, y, currentTool);
+			setPixel(x, y, selectedColorIndex);
 		}
 	}
 
@@ -77,38 +82,29 @@
 <svelte:window onpointerup={handlePointerUp} />
 
 <div class="pixel-editor">
-	<div class="toolbar">
-		<button
-			class="tool-btn"
-			class:active={currentTool === 'draw'}
-			onclick={() => (currentTool = 'draw')}
-			title="Draw (Black)"
-		>
-			<span class="tool-icon draw"></span>
-			<span class="tool-label">Draw</span>
-		</button>
-		<button
-			class="tool-btn"
-			class:active={currentTool === 'erase'}
-			onclick={() => (currentTool = 'erase')}
-			title="Erase (White)"
-		>
-			<span class="tool-icon erase"></span>
-			<span class="tool-label">Erase</span>
-		</button>
-		<div class="toolbar-divider"></div>
+	<div class="palette-bar">
+		{#each PALETTE as color, index}
+			<button
+				class="color-swatch"
+				class:active={selectedColorIndex === index}
+				style="background-color: {colorToHex(color)}"
+				onclick={() => (selectedColorIndex = index)}
+				title={color.name}
+			></button>
+		{/each}
+		<div class="palette-divider"></div>
 		<button class="tool-btn" onclick={clearCanvas} title="Clear Canvas">
-			<span class="tool-label">Clear</span>
+			Clear
 		</button>
 	</div>
 
 	<div class="grid-wrapper">
 		<div class="grid-container" oncontextmenu={handleContextMenu}>
 			{#each grid as row, y}
-				{#each row as grayValue, x}
+				{#each row as colorIndex, x}
 					<button
 						class="pixel"
-						style="background-color: rgb({grayValue}, {grayValue}, {grayValue})"
+						style="background-color: {getPixelColor(colorIndex)}"
 						onpointerdown={(e) => handlePointerDown(x, y, e)}
 						onpointerenter={(e) => handlePointerEnter(x, y, e)}
 						aria-label="Pixel {x},{y}"
@@ -134,27 +130,57 @@
 		width: 100%;
 	}
 
-	.toolbar {
+	.palette-bar {
 		display: flex;
-		gap: 0.5rem;
-		padding: 0.75rem 1rem;
+		align-items: center;
+		gap: 0.375rem;
+		padding: 0.625rem 0.875rem;
 		background: #fff;
 		border: 1px solid #e0e0e0;
 		border-radius: 12px;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 	}
 
+	.color-swatch {
+		width: 32px;
+		height: 32px;
+		border: 2px solid #ddd;
+		border-radius: 6px;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		padding: 0;
+	}
+
+	.color-swatch:hover {
+		transform: scale(1.1);
+		border-color: #999;
+	}
+
+	.color-swatch.active {
+		border-color: #000;
+		box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000;
+		transform: scale(1.1);
+	}
+
+	.palette-divider {
+		width: 1px;
+		height: 28px;
+		background: #e0e0e0;
+		margin: 0 0.5rem;
+	}
+
 	.tool-btn {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		padding: 0.625rem 1rem;
+		padding: 0.5rem 0.875rem;
 		background: #f8f8f8;
 		border: 1px solid #e0e0e0;
 		border-radius: 8px;
 		cursor: pointer;
 		transition: all 0.15s ease;
-		font-size: 0.9rem;
+		font-size: 0.85rem;
+		font-weight: 500;
 		color: #666;
 	}
 
@@ -162,47 +188,6 @@
 		background: #f0f0f0;
 		border-color: #ccc;
 		color: #333;
-	}
-
-	.tool-btn.active {
-		background: #000;
-		border-color: #000;
-		color: #fff;
-	}
-
-	.tool-icon {
-		width: 18px;
-		height: 18px;
-		border-radius: 4px;
-		border: 2px solid currentColor;
-	}
-
-	.tool-icon.draw {
-		background: #000;
-		border-color: #000;
-	}
-
-	.tool-btn.active .tool-icon.draw {
-		border-color: #fff;
-	}
-
-	.tool-icon.erase {
-		background: #fff;
-		border-color: #ccc;
-	}
-
-	.tool-btn.active .tool-icon.erase {
-		border-color: #666;
-	}
-
-	.tool-label {
-		font-weight: 500;
-	}
-
-	.toolbar-divider {
-		width: 1px;
-		background: #e0e0e0;
-		margin: 0 0.5rem;
 	}
 
 	.grid-wrapper {
