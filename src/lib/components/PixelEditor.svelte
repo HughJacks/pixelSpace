@@ -217,6 +217,9 @@
 		box-shadow:
 			0 4px 20px rgba(0, 0, 0, 0.12),
 			0 0 0 1px rgba(0, 0, 0, 0.08);
+		/* Constrain to viewport with padding */
+		width: min(calc(100vw - 2rem), 580px);
+		max-width: 100%;
 	}
 
 	.grid-container {
@@ -229,8 +232,8 @@
 	}
 
 	.pixel {
-		width: clamp(24px, 4vw, 36px);
-		height: clamp(24px, 4vw, 36px);
+		aspect-ratio: 1;
+		width: 100%;
 		border: none;
 		cursor: crosshair;
 		padding: 0;
