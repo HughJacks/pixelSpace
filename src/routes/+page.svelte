@@ -205,11 +205,19 @@
 		{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}
 	</div>
 
-	{#if username}
-		<button class="user-badge" onclick={handleChangeUsername}>
-			<span class="avatar">{username[0].toUpperCase()}</span>
+	<div class="top-right-controls">
+		<button class="info-btn" onclick={() => goto('/about')} aria-label="About PixelSpace">
+			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<circle cx="12" cy="12" r="10"/>
+				<path d="M12 16v-4M12 8h.01"/>
+			</svg>
 		</button>
-	{/if}
+		{#if username}
+			<button class="user-badge" onclick={handleChangeUsername}>
+				<span class="avatar">{username[0].toUpperCase()}</span>
+			</button>
+		{/if}
+	</div>
 </div>
 
 {#if showUsernameModal}
@@ -485,10 +493,39 @@
 		z-index: 100;
 	}
 
-	.user-badge {
+	.top-right-controls {
 		position: fixed;
 		top: 1rem;
 		right: 1rem;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		z-index: 100;
+	}
+
+	.info-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		background: rgba(255, 255, 255, 0.9);
+		border: 1px solid #e0e0e0;
+		border-radius: 50%;
+		color: #666;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+	}
+
+	.info-btn:hover {
+		background: #fff;
+		color: #000;
+		border-color: #ccc;
+		transform: scale(1.1);
+	}
+
+	.user-badge {
 		display: flex;
 		align-items: center;
 		padding: 0;
@@ -496,7 +533,6 @@
 		border: none;
 		cursor: pointer;
 		transition: all 0.15s ease;
-		z-index: 100;
 	}
 
 	.user-badge:hover {
