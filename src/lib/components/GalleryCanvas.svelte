@@ -10,8 +10,28 @@
 	// ============================================================================
 
 	// Normalize pixels to color index format (handles legacy BW data)
+	// Also validates and fixes any malformed data
 	function normalizePixels(pixels: number[]): number[] {
-		return isLegacyBWFormat(pixels) ? convertLegacyPixels(pixels) : pixels;
+		const expectedLength = GRID_SIZE * GRID_SIZE;
+		let normalized = isLegacyBWFormat(pixels) ? convertLegacyPixels(pixels) : [...pixels];
+		
+		// Ensure array is the correct length
+		if (normalized.length < expectedLength) {
+			// Pad with white pixels
+			normalized = [...normalized, ...new Array(expectedLength - normalized.length).fill(COLOR_WHITE)];
+		} else if (normalized.length > expectedLength) {
+			normalized = normalized.slice(0, expectedLength);
+		}
+		
+		// Ensure all values are valid color indices (0 to NUM_COLORS-1)
+		for (let i = 0; i < normalized.length; i++) {
+			const val = normalized[i];
+			if (val === undefined || val === null || val < 0 || val >= NUM_COLORS) {
+				normalized[i] = COLOR_WHITE; // Default to white for invalid values
+			}
+		}
+		
+		return normalized;
 	}
 
 	// --- Color Histogram (8 features) ---
@@ -33,18 +53,25 @@
 		
 		for (let y = 0; y < GRID_SIZE; y++) {
 			for (let x = 0; x < GRID_SIZE; x++) {
-				const c1 = pixels[y * GRID_SIZE + x];
+				const c1 = pixels[y * GRID_SIZE + x] ?? COLOR_WHITE;
+				// Skip invalid color indices
+				if (c1 < 0 || c1 >= NUM_COLORS) continue;
+				
 				// Check right neighbor
 				if (x < GRID_SIZE - 1) {
-					const c2 = pixels[y * GRID_SIZE + x + 1];
-					adj[c1][c2]++;
-					adj[c2][c1]++;
+					const c2 = pixels[y * GRID_SIZE + x + 1] ?? COLOR_WHITE;
+					if (c2 >= 0 && c2 < NUM_COLORS) {
+						adj[c1][c2]++;
+						adj[c2][c1]++;
+					}
 				}
 				// Check bottom neighbor
 				if (y < GRID_SIZE - 1) {
-					const c2 = pixels[(y + 1) * GRID_SIZE + x];
-					adj[c1][c2]++;
-					adj[c2][c1]++;
+					const c2 = pixels[(y + 1) * GRID_SIZE + x] ?? COLOR_WHITE;
+					if (c2 >= 0 && c2 < NUM_COLORS) {
+						adj[c1][c2]++;
+						adj[c2][c1]++;
+					}
 				}
 			}
 		}
