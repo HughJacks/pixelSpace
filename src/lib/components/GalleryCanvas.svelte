@@ -376,7 +376,7 @@
 
 	// Drawing size on canvas
 	const DRAWING_SIZE = 56;
-	const DRAWING_PADDING = 28;
+	const DRAWING_PADDING = 48;
 	const MIN_SPACING = DRAWING_SIZE + DRAWING_PADDING * 2;
 
 	// Bounds of all drawings (for fit-all functionality)
@@ -732,7 +732,7 @@
 					const rangeY = maxY - minY || 1;
 					// Use larger spread on mobile so drawings aren't cramped
 					const isMobile = canvas.width < 768;
-					const spreadMultiplier = isMobile ? 2.5 : 1.2;
+					const spreadMultiplier = isMobile ? 3.0 : 1.8;
 					const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
 
 					// Use untrack to avoid creating reactive dependencies
