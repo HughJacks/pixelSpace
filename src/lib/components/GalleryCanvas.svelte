@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import type { Drawing, DrawingWithPosition, TSNEWorkerMessage, TSNEWorkerResponse } from '$lib/types';
-	import { GRID_SIZE, PALETTE, colorToHex, isLegacyBWFormat, convertLegacyPixels, COLOR_WHITE, pixelsToEncodedValues } from '$lib/palette';
+	import { GRID_SIZE, PALETTE, colorToHex, isLegacyBWFormat, convertLegacyPixels, COLOR_WHITE, COLOR_BLACK, pixelsToEncodedValues } from '$lib/palette';
 	import DrawingPopup from './DrawingPopup.svelte';
 
 	// ============================================================================
@@ -185,6 +185,13 @@
 	let pinchCenterY = 0;
 	let isPinching = false;
 	let activeTouches: Map<number, { x: number; y: number }> = new Map();
+
+	// Tap detection for mobile
+	let touchStartX = 0;
+	let touchStartY = 0;
+	let touchStartTime = 0;
+	const TAP_THRESHOLD = 10; // max movement in pixels
+	const TAP_DURATION = 300; // max duration in ms
 
 	// Momentum and smoothing state
 	let velocityX = 0;
@@ -777,6 +784,28 @@
 		showPopup = false;
 	}
 
+	// Find drawing at screen coordinates
+	function findDrawingAtPoint(clientX: number, clientY: number): Drawing | null {
+		const rect = canvas.getBoundingClientRect();
+		const canvasX = clientX - rect.left;
+		const canvasY = clientY - rect.top;
+
+		const hitSize = (DRAWING_SIZE * scale) / 2 + DRAWING_PADDING * scale;
+
+		for (const drawing of drawingsWithPositions) {
+			const screenX = drawing.x * scale + offsetX;
+			const screenY = drawing.y * scale + offsetY;
+
+			if (
+				Math.abs(canvasX - screenX) < hitSize &&
+				Math.abs(canvasY - screenY) < hitSize
+			) {
+				return drawing;
+			}
+		}
+		return null;
+	}
+
 	// Touch event handlers for pinch-to-zoom and panning
 	function handleTouchStart(event: TouchEvent) {
 		// Clear stale touches and rebuild from current event
@@ -811,6 +840,11 @@
 			pinchCenterX = (t0.clientX + t1.clientX) / 2 - rect.left;
 			pinchCenterY = (t0.clientY + t1.clientY) / 2 - rect.top;
 		} else if (event.touches.length === 1) {
+			// Record for tap detection
+			touchStartX = event.touches[0].clientX;
+			touchStartY = event.touches[0].clientY;
+			touchStartTime = Date.now();
+			
 			// Single touch - start drag
 			isDragging = true;
 			lastMouseX = event.touches[0].clientX;
@@ -883,6 +917,9 @@
 	}
 
 	function handleTouchEnd(event: TouchEvent) {
+		// Get the ended touch for tap detection
+		const endedTouch = event.changedTouches[0];
+		
 		// Update active touches from remaining touches
 		activeTouches.clear();
 		for (let i = 0; i < event.touches.length; i++) {
@@ -909,10 +946,37 @@
 
 		if (event.touches.length === 0) {
 			// All fingers lifted
+			const wasDragging = isDragging;
 			isDragging = false;
 			isPinching = false;
 			
-			// Start momentum animation
+			// Check if this was a tap (minimal movement, short duration)
+			if (endedTouch && wasDragging) {
+				const dx = endedTouch.clientX - touchStartX;
+				const dy = endedTouch.clientY - touchStartY;
+				const distance = Math.sqrt(dx * dx + dy * dy);
+				const duration = Date.now() - touchStartTime;
+				
+				if (distance < TAP_THRESHOLD && duration < TAP_DURATION) {
+					// This was a tap - check if we tapped on a drawing
+					const tappedDrawing = findDrawingAtPoint(endedTouch.clientX, endedTouch.clientY);
+					
+					if (tappedDrawing) {
+						// Show popup for tapped drawing
+						hoveredDrawing = tappedDrawing;
+						mouseX = endedTouch.clientX;
+						mouseY = endedTouch.clientY;
+						showPopup = true;
+					} else {
+						// Tapped empty space - dismiss popup
+						showPopup = false;
+						hoveredDrawing = null;
+					}
+					return; // Don't start momentum after tap
+				}
+			}
+			
+			// Start momentum animation (only if not a tap)
 			if (Math.abs(velocityX) > MIN_VELOCITY || Math.abs(velocityY) > MIN_VELOCITY) {
 				targetOffsetX = offsetX + velocityX * 10;
 				targetOffsetY = offsetY + velocityY * 10;

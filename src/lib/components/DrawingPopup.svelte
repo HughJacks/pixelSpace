@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Drawing } from '$lib/types';
-	import { GRID_SIZE, PALETTE, colorToHex, COLOR_WHITE } from '$lib/palette';
+	import { GRID_SIZE, PALETTE, colorToHex, COLOR_WHITE, COLOR_BLACK } from '$lib/palette';
 
 	interface Props {
 		drawing: Drawing | null;
