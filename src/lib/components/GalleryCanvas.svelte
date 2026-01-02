@@ -371,6 +371,9 @@
 	let lastEmbeddings: [number, number][] | null = null;
 	let lastDrawingIds: string[] = [];
 	
+	// Timeline axis data (for rendering the time axis)
+	let timelineRange: { minTime: number; maxTime: number; spreadFactor: number } | null = null;
+	
 	// User-friendly feature weights (0-2 range, 1 = normal)
 	// These map to the technical feature groups internally
 	let weightColor = $state(1);  // → color histogram
@@ -478,6 +481,9 @@
 		const isMobile = canvas.width < 768;
 		
 		if (mode === 'cluster') {
+			// Clear timeline range when not in timeline mode
+			timelineRange = null;
+			
 			// Standard 2D UMAP clustering
 			let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 			for (const [ex, ey] of embeddings) {
@@ -502,10 +508,10 @@
 		} else {
 			// Timeline mode: X = time, Y = 1D UMAP (first component)
 			
-			// Parse timestamps and find range
+			// Parse timestamps and find range (use "now" as the max time)
 			const timestamps = currentDrawings.map(d => new Date(d.created).getTime());
 			const minTime = Math.min(...timestamps);
-			const maxTime = Math.max(...timestamps);
+			const maxTime = Date.now(); // Use current time as the right edge
 			const timeRange = maxTime - minTime || 1;
 			
 			// Find Y range from first UMAP component
@@ -519,6 +525,9 @@
 			// Use wider spread for timeline (drawings spread across time)
 			const spreadMultiplier = isMobile ? 4.0 : 2.5;
 			const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
+			
+			// Store timeline range for axis rendering
+			timelineRange = { minTime, maxTime, spreadFactor };
 			
 			currentDrawings.forEach((drawing, i) => {
 				if (embeddings[i]) {
@@ -909,6 +918,7 @@
 		const _offsetY = offsetY;
 		const _drawings = drawingsWithPositions;
 		const _opacities = drawingOpacities;
+		const _mode = visualizationMode; // Track mode for timeline axis
 		
 		if (ctx && _drawings) {
 			scheduleRender();
@@ -1032,6 +1042,140 @@
 		startAnimation();
 	}
 
+	// Format date for timeline axis labels based on the tick interval
+	function formatTimelineDate(timestamp: number, tickInterval: number): string {
+		const date = new Date(timestamp);
+		const now = new Date();
+		const isCurrentYear = date.getFullYear() === now.getFullYear();
+		
+		const DAY_MS = 1000 * 60 * 60 * 24;
+		const WEEK_MS = DAY_MS * 7;
+		
+		// If interval is less than a day, show time
+		if (tickInterval < DAY_MS) {
+			const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+			const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+			return `${dateStr} ${timeStr}`;
+		}
+		
+		// If interval is less than a week, show day of week + date
+		if (tickInterval < WEEK_MS) {
+			if (isCurrentYear) {
+				return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+			}
+			return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: '2-digit' });
+		}
+		
+		// Otherwise just show date
+		if (isCurrentYear) {
+			return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+		}
+		return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+	}
+
+	// Render the timeline axis (horizontal line with date labels)
+	function renderTimelineAxis() {
+		if (!ctx || !timelineRange || visualizationMode !== 'timeline') return;
+		
+		const { minTime, maxTime, spreadFactor } = timelineRange;
+		const timeRange = maxTime - minTime || 1;
+		
+		// Calculate world coordinates for the axis (y = 0 is center)
+		const axisWorldY = 0;
+		
+		// Convert to screen coordinates
+		const axisScreenY = axisWorldY * scale + offsetY;
+		
+		// Calculate visible world X range
+		const worldLeftX = (0 - offsetX) / scale;
+		const worldRightX = (canvas.width - offsetX) / scale;
+		
+		// Draw main axis line
+		ctx.save();
+		ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)';
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(0, axisScreenY);
+		ctx.lineTo(canvas.width, axisScreenY);
+		ctx.stroke();
+		
+		// Calculate tick interval based on zoom level
+		// We want roughly 5-8 labels visible at a time
+		const visibleWorldWidth = worldRightX - worldLeftX;
+		const visibleTimeSpan = (visibleWorldWidth / spreadFactor) * timeRange;
+		
+		// Choose appropriate interval (in milliseconds)
+		const intervals = [
+			1000 * 60 * 60,           // 1 hour
+			1000 * 60 * 60 * 6,       // 6 hours
+			1000 * 60 * 60 * 12,      // 12 hours
+			1000 * 60 * 60 * 24,      // 1 day
+			1000 * 60 * 60 * 24 * 7,  // 1 week
+			1000 * 60 * 60 * 24 * 30, // ~1 month
+			1000 * 60 * 60 * 24 * 90, // ~3 months
+			1000 * 60 * 60 * 24 * 365 // ~1 year
+		];
+		
+		let tickInterval = intervals[0];
+		for (const interval of intervals) {
+			if (visibleTimeSpan / interval <= 10) {
+				tickInterval = interval;
+				break;
+			}
+			tickInterval = interval;
+		}
+		
+		// Find first tick (aligned to interval)
+		const visibleMinTime = minTime + ((worldLeftX / spreadFactor) + 0.5) * timeRange;
+		const visibleMaxTime = minTime + ((worldRightX / spreadFactor) + 0.5) * timeRange;
+		const firstTick = Math.ceil(visibleMinTime / tickInterval) * tickInterval;
+		
+		// Set up text rendering
+		ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+		ctx.font = '11px system-ui, -apple-system, sans-serif';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'top';
+		
+		// Draw ticks and labels
+		for (let t = firstTick; t <= visibleMaxTime && t <= maxTime; t += tickInterval) {
+			// Convert time to world X coordinate
+			const worldX = ((t - minTime) / timeRange - 0.5) * spreadFactor;
+			const screenX = worldX * scale + offsetX;
+			
+			// Skip if off screen
+			if (screenX < -50 || screenX > canvas.width + 50) continue;
+			
+			// Draw tick mark
+			ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+			ctx.beginPath();
+			ctx.moveTo(screenX, axisScreenY - 4);
+			ctx.lineTo(screenX, axisScreenY + 4);
+			ctx.stroke();
+			
+			// Draw label with time if interval is small enough
+			const label = formatTimelineDate(t, tickInterval);
+			ctx.fillText(label, screenX, axisScreenY + 8);
+		}
+		
+		// Draw "Now" label at the right edge if visible
+		const nowWorldX = ((maxTime - minTime) / timeRange - 0.5) * spreadFactor;
+		const nowScreenX = nowWorldX * scale + offsetX;
+		if (nowScreenX >= -50 && nowScreenX <= canvas.width + 50) {
+			ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+			ctx.font = 'bold 11px system-ui, -apple-system, sans-serif';
+			ctx.fillText('Now', nowScreenX, axisScreenY + 8);
+			
+			// Draw a slightly more prominent tick for "now"
+			ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+			ctx.beginPath();
+			ctx.moveTo(nowScreenX, axisScreenY - 6);
+			ctx.lineTo(nowScreenX, axisScreenY + 6);
+			ctx.stroke();
+		}
+		
+		ctx.restore();
+	}
+
 	function render() {
 		if (!ctx) return;
 
@@ -1041,6 +1185,9 @@
 
 		// Ensure crisp scaling
 		ctx.imageSmoothingEnabled = false;
+
+		// Draw timeline axis first (behind drawings)
+		renderTimelineAxis();
 
 		// Draw each pixel art
 		for (const drawing of drawingsWithPositions) {
