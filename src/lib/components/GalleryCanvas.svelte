@@ -179,6 +179,11 @@
 	// Touch zoom state
 	let initialPinchDistance = 0;
 	let initialPinchScale = 1;
+	let initialPinchOffsetX = 0;
+	let initialPinchOffsetY = 0;
+	let pinchCenterX = 0;
+	let pinchCenterY = 0;
+	let isPinching = false;
 	let activeTouches: Map<number, { x: number; y: number }> = new Map();
 
 	// Momentum and smoothing state
@@ -686,6 +691,9 @@
 	}
 
 	function handlePointerDown(event: PointerEvent) {
+		// Skip if pinching (touch events handle this)
+		if (isPinching || event.pointerType === 'touch') return;
+		
 		if (event.button === 0) {
 			isDragging = true;
 			lastMouseX = event.clientX;
@@ -698,6 +706,9 @@
 	}
 
 	function handlePointerMove(event: PointerEvent) {
+		// Skip if pinching (touch events handle this)
+		if (isPinching || event.pointerType === 'touch') return;
+		
 		mouseX = event.clientX;
 		mouseY = event.clientY;
 
@@ -747,6 +758,9 @@
 	}
 
 	function handlePointerUp(event: PointerEvent) {
+		// Skip if touch (touch events handle this)
+		if (event.pointerType === 'touch') return;
+		
 		isDragging = false;
 		canvas.releasePointerCapture(event.pointerId);
 		
@@ -763,50 +777,82 @@
 		showPopup = false;
 	}
 
-	// Touch event handlers for pinch-to-zoom
+	// Touch event handlers for pinch-to-zoom and panning
 	function handleTouchStart(event: TouchEvent) {
-		for (const touch of event.changedTouches) {
+		// Clear stale touches and rebuild from current event
+		activeTouches.clear();
+		for (let i = 0; i < event.touches.length; i++) {
+			const touch = event.touches[i];
 			activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
 		}
 
-		if (activeTouches.size === 2) {
+		if (event.touches.length === 2) {
+			// Prevent browser handling of pinch/pan
+			event.preventDefault();
+			
 			// Start pinch gesture
-			const touches = Array.from(activeTouches.values());
-			const dx = touches[1].x - touches[0].x;
-			const dy = touches[1].y - touches[0].y;
+			isPinching = true;
+			isDragging = false;
+			velocityX = 0;
+			velocityY = 0;
+			
+			const t0 = event.touches[0];
+			const t1 = event.touches[1];
+			const dx = t1.clientX - t0.clientX;
+			const dy = t1.clientY - t0.clientY;
+			
 			initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
 			initialPinchScale = scale;
+			initialPinchOffsetX = offsetX;
+			initialPinchOffsetY = offsetY;
+			
+			// Store initial pinch center (in canvas coordinates)
+			const rect = canvas.getBoundingClientRect();
+			pinchCenterX = (t0.clientX + t1.clientX) / 2 - rect.left;
+			pinchCenterY = (t0.clientY + t1.clientY) / 2 - rect.top;
+		} else if (event.touches.length === 1) {
+			// Single touch - start drag
+			isDragging = true;
+			lastMouseX = event.touches[0].clientX;
+			lastMouseY = event.touches[0].clientY;
+			velocityX = 0;
+			velocityY = 0;
 		}
 	}
 
 	function handleTouchMove(event: TouchEvent) {
 		// Update touch positions
-		for (const touch of event.changedTouches) {
+		for (let i = 0; i < event.touches.length; i++) {
+			const touch = event.touches[i];
 			activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
 		}
 
-		if (activeTouches.size === 2 && initialPinchDistance > 0) {
+		if (event.touches.length === 2 && isPinching && initialPinchDistance > 0) {
 			event.preventDefault();
 			
-			const touches = Array.from(activeTouches.values());
-			const dx = touches[1].x - touches[0].x;
-			const dy = touches[1].y - touches[0].y;
+			const t0 = event.touches[0];
+			const t1 = event.touches[1];
+			const dx = t1.clientX - t0.clientX;
+			const dy = t1.clientY - t0.clientY;
 			const currentDistance = Math.sqrt(dx * dx + dy * dy);
 
 			// Calculate new scale based on pinch
 			const scaleChange = currentDistance / initialPinchDistance;
-			const minScale = Math.min(getMinScaleForBounds(), 1);
+			const minScale = Math.min(getMinScaleForBounds(), 0.5);
 			const newScale = Math.max(minScale, Math.min(5, initialPinchScale * scaleChange));
 
-			// Get pinch center point
+			// Current pinch center
 			const rect = canvas.getBoundingClientRect();
-			const centerX = (touches[0].x + touches[1].x) / 2 - rect.left;
-			const centerY = (touches[0].y + touches[1].y) / 2 - rect.top;
+			const currentCenterX = (t0.clientX + t1.clientX) / 2 - rect.left;
+			const currentCenterY = (t0.clientY + t1.clientY) / 2 - rect.top;
 
-			// Zoom toward pinch center
-			const scaleRatio = newScale / scale;
-			offsetX = centerX - (centerX - offsetX) * scaleRatio;
-			offsetY = centerY - (centerY - offsetY) * scaleRatio;
+			// Calculate new offset to keep initial pinch point stationary
+			// The world point under the initial pinch center should stay under the current center
+			const worldX = (pinchCenterX - initialPinchOffsetX) / initialPinchScale;
+			const worldY = (pinchCenterY - initialPinchOffsetY) / initialPinchScale;
+			
+			offsetX = currentCenterX - worldX * newScale;
+			offsetY = currentCenterY - worldY * newScale;
 			scale = newScale;
 
 			targetScale = scale;
@@ -814,16 +860,64 @@
 			targetOffsetY = offsetY;
 
 			scheduleRender();
+		} else if (event.touches.length === 1 && isDragging && !isPinching) {
+			// Single touch pan
+			const touch = event.touches[0];
+			const deltaX = touch.clientX - lastMouseX;
+			const deltaY = touch.clientY - lastMouseY;
+			
+			// Track velocity for momentum
+			velocityX = deltaX * 0.8 + velocityX * 0.2;
+			velocityY = deltaY * 0.8 + velocityY * 0.2;
+			
+			offsetX += deltaX;
+			offsetY += deltaY;
+			targetOffsetX = offsetX;
+			targetOffsetY = offsetY;
+			
+			lastMouseX = touch.clientX;
+			lastMouseY = touch.clientY;
+			
+			scheduleRender();
 		}
 	}
 
 	function handleTouchEnd(event: TouchEvent) {
-		for (const touch of event.changedTouches) {
-			activeTouches.delete(touch.identifier);
+		// Update active touches from remaining touches
+		activeTouches.clear();
+		for (let i = 0; i < event.touches.length; i++) {
+			const touch = event.touches[i];
+			activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
 		}
 
-		if (activeTouches.size < 2) {
-			initialPinchDistance = 0;
+		if (event.touches.length < 2) {
+			// End pinch
+			if (isPinching) {
+				isPinching = false;
+				initialPinchDistance = 0;
+				
+				// If one finger remains, transition to pan
+				if (event.touches.length === 1) {
+					isDragging = true;
+					lastMouseX = event.touches[0].clientX;
+					lastMouseY = event.touches[0].clientY;
+					velocityX = 0;
+					velocityY = 0;
+				}
+			}
+		}
+
+		if (event.touches.length === 0) {
+			// All fingers lifted
+			isDragging = false;
+			isPinching = false;
+			
+			// Start momentum animation
+			if (Math.abs(velocityX) > MIN_VELOCITY || Math.abs(velocityY) > MIN_VELOCITY) {
+				targetOffsetX = offsetX + velocityX * 10;
+				targetOffsetY = offsetY + velocityY * 10;
+				startAnimation();
+			}
 		}
 	}
 </script>
