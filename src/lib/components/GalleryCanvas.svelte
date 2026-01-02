@@ -207,18 +207,29 @@
 		return features;
 	}
 
-	// --- Combined Enhanced Feature Extraction ---
+	// --- Combined Enhanced Feature Extraction with Weights ---
 	// Total: 8 + 64 + 4 + 6 + 4 + 16 = 102 features
-	function extractEnhancedFeatures(pixels: number[]): number[] {
+	function extractEnhancedFeatures(pixels: number[], weights: {
+		colorHist: number;
+		adjacency: number;
+		symmetry: number;
+		structure: number;
+		components: number;
+		spatial: number;
+	}): number[] {
 		const normalized = normalizePixels(pixels);
 		
+		// Apply weights by scaling feature groups
+		const applyWeight = (features: number[], weight: number) => 
+			features.map(f => f * weight);
+		
 		return [
-			...colorHistogram(normalized),           // 8: color distribution
-			...colorAdjacencyMatrix(normalized),     // 64: color relationships
-			...symmetryFeatures(normalized),         // 4: symmetry scores
-			...structuralFeatures(normalized),       // 6: shape metrics
-			...connectedComponentFeatures(normalized), // 4: region analysis
-			...downsampledSpatial(normalized)        // 16: spatial density
+			...applyWeight(colorHistogram(normalized), weights.colorHist),
+			...applyWeight(colorAdjacencyMatrix(normalized), weights.adjacency),
+			...applyWeight(symmetryFeatures(normalized), weights.symmetry),
+			...applyWeight(structuralFeatures(normalized), weights.structure),
+			...applyWeight(connectedComponentFeatures(normalized), weights.components),
+			...applyWeight(downsampledSpatial(normalized), weights.spatial)
 		];
 	}
 
@@ -260,7 +271,7 @@
 	let container: HTMLDivElement;
 
 	// Transform state
-	let scale = $state(1.5);
+	let scale = $state(2.5);
 	let offsetX = $state(0);
 	let offsetY = $state(0);
 
@@ -289,7 +300,7 @@
 	// Momentum and smoothing state
 	let velocityX = 0;
 	let velocityY = 0;
-	let targetScale = 1.5;
+	let targetScale = 2.5;
 	let targetOffsetX = 0;
 	let targetOffsetY = 0;
 	let animating = false;
@@ -305,13 +316,40 @@
 
 	// UMAP state
 	let positions: Map<string, { x: number; y: number }> = $state(new Map());
+	let targetPositions: Map<string, { x: number; y: number }> = new Map();
 	let isComputing = $state(false);
 	let progress = $state(0);
 	let worker: Worker | null = null;
+	let isAnimatingPositions = $state(false);
+	let positionAnimationProgress = 0;
+	let oldPositions: Map<string, { x: number; y: number }> = new Map();
+
+	// Intro animation state
+	let isFirstLoad = true;
+	let introComplete = $state(false);
+	let drawingOpacities: Map<string, number> = $state(new Map());
+	let introAnimationPhase: 'idle' | 'fadein' | 'waiting' | 'clustering' = $state('idle');
+	const FADE_IN_DURATION = 800; // Total duration for all fade-ins
+	const FADE_IN_STAGGER = 25; // Delay between each drawing
+	const WAIT_BEFORE_CLUSTER = 600; // Pause before clustering animation
+
+	// Control panel state
+	let showControlPanel = $state(false);
+	
+	// User-friendly feature weights (0-2 range, 1 = normal)
+	// These map to the technical feature groups internally
+	let weightColor = $state(1);  // → color histogram
+	let weightShape = $state(1);  // → structure + components + spatial
+	let weightStyle = $state(1);  // → adjacency + symmetry
+	
+	// UMAP parameters
+	let paramNeighbors = $state(15);
+	let paramMinDist = $state(0.1);
+	let paramEpochs = $state(150);
 
 	// Drawing size on canvas
-	const DRAWING_SIZE = 48;
-	const DRAWING_PADDING = 20;
+	const DRAWING_SIZE = 56;
+	const DRAWING_PADDING = 28;
 	const MIN_SPACING = DRAWING_SIZE + DRAWING_PADDING * 2;
 
 	// Bounds of all drawings (for fit-all functionality)
@@ -450,6 +488,181 @@
 		}
 	}
 
+	// Animation for transitioning between clustering layouts
+	const POSITION_ANIMATION_DURATION = 1200; // ms
+	let positionAnimationStart = 0;
+
+	function startPositionAnimation() {
+		if (isAnimatingPositions) return;
+		isAnimatingPositions = true;
+		positionAnimationStart = performance.now();
+		positionAnimationProgress = 0;
+		requestAnimationFrame(animatePositions);
+	}
+
+	function easeInOutCubic(t: number): number {
+		return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+	}
+
+	function easeOutQuad(t: number): number {
+		return 1 - (1 - t) * (1 - t);
+	}
+
+	function animatePositions(timestamp: number) {
+		const elapsed = timestamp - positionAnimationStart;
+		const rawProgress = Math.min(elapsed / POSITION_ANIMATION_DURATION, 1);
+		positionAnimationProgress = easeInOutCubic(rawProgress);
+
+		// Interpolate positions
+		const interpolated = new Map<string, { x: number; y: number }>();
+		
+		for (const [id, targetPos] of targetPositions) {
+			const oldPos = oldPositions.get(id);
+			if (oldPos) {
+				// Interpolate from old to new
+				interpolated.set(id, {
+					x: oldPos.x + (targetPos.x - oldPos.x) * positionAnimationProgress,
+					y: oldPos.y + (targetPos.y - oldPos.y) * positionAnimationProgress
+				});
+			} else {
+				// New drawing - fade in from center or target
+				interpolated.set(id, {
+					x: targetPos.x * positionAnimationProgress,
+					y: targetPos.y * positionAnimationProgress
+				});
+			}
+		}
+
+		positions = interpolated;
+		scheduleRender();
+
+		if (rawProgress < 1) {
+			requestAnimationFrame(animatePositions);
+		} else {
+			// Animation complete
+			isAnimatingPositions = false;
+			introAnimationPhase = 'idle';
+			positions = targetPositions;
+			scheduleRender();
+		}
+	}
+
+	// Generate random positions spread across the canvas
+	function generateRandomPositions(drawingIds: string[]): Map<string, { x: number; y: number }> {
+		const randomPositions = new Map<string, { x: number; y: number }>();
+		const spreadX = canvas.width * 0.8;
+		const spreadY = canvas.height * 0.8;
+		
+		for (const id of drawingIds) {
+			randomPositions.set(id, {
+				x: (Math.random() - 0.5) * spreadX,
+				y: (Math.random() - 0.5) * spreadY
+			});
+		}
+		
+		// Resolve collisions so drawings don't overlap
+		resolveCollisions(randomPositions, MIN_SPACING, 4);
+		
+		return randomPositions;
+	}
+
+	// Shuffle array using Fisher-Yates algorithm
+	function shuffleArray<T>(array: T[]): T[] {
+		const shuffled = [...array];
+		for (let i = shuffled.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+		}
+		return shuffled;
+	}
+
+	// Start the intro animation sequence
+	function startIntroAnimation(drawingIds: string[], clusteredPositions: Map<string, { x: number; y: number }>) {
+		introAnimationPhase = 'fadein';
+		
+		// Shuffle the order for a more organic staggered appearance
+		const shuffledIds = shuffleArray(drawingIds);
+		const idToOrder = new Map<string, number>();
+		shuffledIds.forEach((id, i) => idToOrder.set(id, i));
+		
+		// Initialize all opacities to 0
+		const opacities = new Map<string, number>();
+		for (const id of drawingIds) {
+			opacities.set(id, 0);
+		}
+		drawingOpacities = opacities;
+		
+		// Generate random starting positions
+		const randomPositions = generateRandomPositions(drawingIds);
+		positions = randomPositions;
+		
+		// Store clustered positions as target
+		targetPositions = clusteredPositions;
+		oldPositions = new Map(randomPositions); // Make a copy
+		
+		// Start the fade-in animation
+		const fadeInStart = performance.now();
+		const totalFadeInTime = FADE_IN_DURATION + (drawingIds.length * FADE_IN_STAGGER);
+		
+		function animateFadeIn(timestamp: number) {
+			const elapsed = timestamp - fadeInStart;
+			
+			// Update opacity for each drawing with stagger (using shuffled order)
+			const newOpacities = new Map<string, number>();
+			for (const id of drawingIds) {
+				const order = idToOrder.get(id) ?? 0;
+				const startTime = order * FADE_IN_STAGGER;
+				const drawingProgress = Math.max(0, Math.min(1, (elapsed - startTime) / FADE_IN_DURATION));
+				newOpacities.set(id, easeOutQuad(drawingProgress));
+			}
+			drawingOpacities = newOpacities;
+			scheduleRender();
+			
+			if (elapsed < totalFadeInTime) {
+				requestAnimationFrame(animateFadeIn);
+			} else {
+				// Fade-in complete - all opacities to 1
+				const fullOpacities = new Map<string, number>();
+				for (const id of drawingIds) {
+					fullOpacities.set(id, 1);
+				}
+				drawingOpacities = fullOpacities;
+				scheduleRender();
+				
+				// Wait a beat before clustering
+				introAnimationPhase = 'waiting';
+				setTimeout(() => {
+					// Start the clustering animation
+					introAnimationPhase = 'clustering';
+					isAnimatingPositions = true;
+					positionAnimationStart = performance.now();
+					positionAnimationProgress = 0;
+					requestAnimationFrame(animatePositions);
+					
+					// Start animating the view to fit all positions (animated zoom out)
+					setTimeout(() => {
+						fitAllInView(true); // Animate the zoom
+					}, POSITION_ANIMATION_DURATION * 0.2);
+					
+					// Mark intro complete when clustering animation ends
+					setTimeout(() => {
+						introComplete = true;
+					}, POSITION_ANIMATION_DURATION + 200);
+				}, WAIT_BEFORE_CLUSTER);
+			}
+		}
+		
+		// Center view for the intro
+		offsetX = canvas.width / 2;
+		offsetY = canvas.height / 2;
+		targetOffsetX = offsetX;
+		targetOffsetY = offsetY;
+		scale = 1.2;
+		targetScale = scale;
+		
+		requestAnimationFrame(animateFadeIn);
+	}
+
 	onMount(() => {
 		ctx = canvas.getContext('2d');
 		if (ctx) {
@@ -472,56 +685,77 @@
 			} else if (data.type === 'progress') {
 				progress = ((data.iteration || 0) / (data.totalIterations || 1)) * 100;
 			} else if (data.type === 'done' && data.embeddings) {
-				// Map embeddings to drawing IDs
-				const newPositions = new Map<string, { x: number; y: number }>();
-				
-				// Normalize embeddings to fit nicely in the view
-				const embeddings = data.embeddings;
-				let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-				
-				for (const [ex, ey] of embeddings) {
-					minX = Math.min(minX, ex);
-					maxX = Math.max(maxX, ex);
-					minY = Math.min(minY, ey);
-					maxY = Math.max(maxY, ey);
-				}
-				
-				const rangeX = maxX - minX || 1;
-				const rangeY = maxY - minY || 1;
-				const spreadFactor = Math.max(canvas.width, canvas.height) * 1.2;
-
-				// Use untrack to avoid creating reactive dependencies
-				const currentDrawings = untrack(() => drawings);
-				currentDrawings.forEach((drawing, i) => {
-					if (embeddings[i]) {
-						const normalizedX = ((embeddings[i][0] - minX) / rangeX - 0.5) * spreadFactor;
-						const normalizedY = ((embeddings[i][1] - minY) / rangeY - 0.5) * spreadFactor;
-						newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
+				// Handle async operations in an IIFE
+				(async () => {
+					// Map embeddings to drawing IDs
+					const newPositions = new Map<string, { x: number; y: number }>();
+					
+					// Normalize embeddings to fit nicely in the view
+					const embeddings = data.embeddings!;
+					let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+					
+					for (const [ex, ey] of embeddings) {
+						minX = Math.min(minX, ex);
+						maxX = Math.max(maxX, ex);
+						minY = Math.min(minY, ey);
+						maxY = Math.max(maxY, ey);
 					}
-				});
+					
+					const rangeX = maxX - minX || 1;
+					const rangeY = maxY - minY || 1;
+					// Use larger spread on mobile so drawings aren't cramped
+					const isMobile = canvas.width < 768;
+					const spreadMultiplier = isMobile ? 2.5 : 1.2;
+					const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
 
-				// Push apart any overlapping drawings
-				resolveCollisions(newPositions, MIN_SPACING);
+					// Use untrack to avoid creating reactive dependencies
+					const currentDrawings = untrack(() => drawings);
+					currentDrawings.forEach((drawing, i) => {
+						if (embeddings[i]) {
+							const normalizedX = ((embeddings[i][0] - minX) / rangeX - 0.5) * spreadFactor;
+							const normalizedY = ((embeddings[i][1] - minY) / rangeY - 0.5) * spreadFactor;
+							newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
+						}
+					});
 
-				positions = newPositions;
-				isComputing = false;
-				progress = 100;
-				
-				// Calculate bounds of all drawings
-				let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
-				for (const pos of newPositions.values()) {
-					bMinX = Math.min(bMinX, pos.x);
-					bMaxX = Math.max(bMaxX, pos.x);
-					bMinY = Math.min(bMinY, pos.y);
-					bMaxY = Math.max(bMaxY, pos.y);
-				}
-				bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
-				
-				// Pre-cache all drawing images for fast rendering
-				cacheAllDrawingImages(currentDrawings);
-				
-				// Fit all drawings in view initially
-				fitAllInView();
+					// Push apart any overlapping drawings - use larger spacing on mobile
+					const mobileSpacing = isMobile ? MIN_SPACING * 1.5 : MIN_SPACING;
+					resolveCollisions(newPositions, mobileSpacing);
+
+					isComputing = false;
+					progress = 100;
+					
+					// Calculate bounds of all drawings
+					let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+					for (const pos of newPositions.values()) {
+						bMinX = Math.min(bMinX, pos.x);
+						bMaxX = Math.max(bMaxX, pos.x);
+						bMinY = Math.min(bMinY, pos.y);
+						bMaxY = Math.max(bMaxY, pos.y);
+					}
+					bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
+					
+					// Pre-cache all drawing images for fast rendering
+					await cacheAllDrawingImages(currentDrawings);
+					
+					// Check if this is the first load
+					if (isFirstLoad && positions.size === 0) {
+						isFirstLoad = false;
+						// Start intro animation: random positions → fade in → cluster
+						const drawingIds = currentDrawings.map(d => d.id);
+						startIntroAnimation(drawingIds, newPositions);
+					} else if (positions.size > 0) {
+						// Store old positions and start animation to new positions
+						oldPositions = new Map(positions);
+						targetPositions = newPositions;
+						startPositionAnimation();
+					} else {
+						// Fallback - set positions directly and fit view
+						positions = newPositions;
+						fitAllInView();
+						introComplete = true;
+					}
+				})();
 			}
 		};
 
@@ -556,13 +790,14 @@
 		const _offsetX = offsetX;
 		const _offsetY = offsetY;
 		const _drawings = drawingsWithPositions;
+		const _opacities = drawingOpacities;
 		
 		if (ctx && _drawings) {
 			scheduleRender();
 		}
 	});
 
-	function runUMAP() {
+	function runUMAP(useCustomParams = false) {
 		// Read drawings without creating reactive dependencies
 		const currentDrawings = untrack(() => drawings);
 
@@ -571,26 +806,47 @@
 		isComputing = true;
 		progress = 0;
 
-		// Extract enhanced feature vectors for better clustering
-		// 102 features: color histogram, adjacency, symmetry, structure, components, spatial
-		const vectors = currentDrawings.map((d) => extractEnhancedFeatures([...d.pixels]));
+		// Map user-friendly weights to technical feature weights
+		const weights = untrack(() => ({
+			colorHist: weightColor,           // Color → color histogram
+			adjacency: weightStyle,           // Style → adjacency patterns  
+			symmetry: weightStyle,            // Style → symmetry scores
+			structure: weightShape,           // Shape → structural metrics
+			components: weightShape,          // Shape → connected regions
+			spatial: weightShape              // Shape → spatial density
+		}));
 
-		// Dynamic config based on dataset size
+		// Extract enhanced feature vectors with weights applied
+		const vectors = currentDrawings.map((d) => extractEnhancedFeatures([...d.pixels], weights));
+
+		// Use custom params from control panel or auto-calculate based on dataset size
 		const n = vectors.length;
-		const nNeighbors = Math.min(15, Math.max(5, Math.floor(n / 5)));
-		const nEpochs = n < 50 ? 100 : n < 200 ? 150 : 200;
+		const nNeighbors = useCustomParams 
+			? untrack(() => paramNeighbors)
+			: Math.min(15, Math.max(5, Math.floor(n / 5)));
+		const nEpochs = useCustomParams 
+			? untrack(() => paramEpochs)
+			: (n < 50 ? 100 : n < 200 ? 150 : 200);
+		const minDist = useCustomParams 
+			? untrack(() => paramMinDist)
+			: 0.1;
 
 		const message: UMAPWorkerMessage = {
 			type: 'run',
 			vectors,
 			config: {
-				nNeighbors,
-				minDist: 0.1,
+				nNeighbors: Math.min(nNeighbors, Math.floor((n - 1) / 2)),
+				minDist,
 				nEpochs
 			}
 		};
 
 		worker.postMessage(message);
+	}
+
+	function handleRecluster() {
+		if (isComputing || isAnimatingPositions) return;
+		runUMAP(true);
 	}
 
 	function resizeCanvas() {
@@ -612,7 +868,7 @@
 
 	// Calculate the scale needed to fit all drawings in view
 	function getMinScaleForBounds(): number {
-		if (bounds.minX === bounds.maxX && bounds.minY === bounds.maxY) return 0.1;
+		if (bounds.minX === bounds.maxX && bounds.minY === bounds.maxY) return 0.3;
 		
 		const padding = DRAWING_SIZE * 2; // Extra padding around bounds
 		const boundsWidth = bounds.maxX - bounds.minX + padding;
@@ -624,22 +880,36 @@
 		return Math.min(scaleX, scaleY, 1) * 0.9; // 0.9 to leave some margin
 	}
 
+	// Determine if we're on a mobile device (small screen)
+	function isMobileView(): boolean {
+		return canvas && canvas.width < 768;
+	}
+
 	// Fit all drawings in the viewport
-	function fitAllInView() {
+	// animate = true: smoothly animate to the fit position
+	// animate = false: snap immediately (for initial load)
+	function fitAllInView(animate = false) {
 		if (positions.size === 0) return;
 		
 		const fitScale = getMinScaleForBounds();
 		const centerX = (bounds.minX + bounds.maxX) / 2;
 		const centerY = (bounds.minY + bounds.maxY) / 2;
 		
-		targetScale = fitScale;
-		targetOffsetX = canvas.width / 2 - centerX * fitScale;
-		targetOffsetY = canvas.height / 2 - centerY * fitScale;
+		// On mobile, start more zoomed in so drawings are larger and visible
+		// Use a higher minimum scale for mobile devices
+		const minScale = isMobileView() ? 0.8 : 0.5;
+		const finalScale = Math.max(fitScale, minScale);
 		
-		// Also set current values for immediate effect on initial load
-		scale = fitScale;
-		offsetX = targetOffsetX;
-		offsetY = targetOffsetY;
+		targetScale = finalScale;
+		targetOffsetX = canvas.width / 2 - centerX * finalScale;
+		targetOffsetY = canvas.height / 2 - centerY * finalScale;
+		
+		if (!animate) {
+			// Snap immediately for initial load
+			scale = finalScale;
+			offsetX = targetOffsetX;
+			offsetY = targetOffsetY;
+		}
 		
 		startAnimation();
 	}
@@ -757,21 +1027,37 @@
 		const x = Math.round(screenX - drawSize / 2);
 		const y = Math.round(screenY - drawSize / 2);
 		
+		// Get opacity for this drawing (default to 1 if not in intro animation)
+		const opacity = drawingOpacities.get(drawing.id) ?? 1;
+		
+		// Skip if fully transparent
+		if (opacity <= 0) return;
+		
+		// Apply opacity if not fully opaque
+		const needsOpacity = opacity < 1;
+		if (needsOpacity) {
+			ctx.save();
+			ctx.globalAlpha = opacity;
+		}
+		
 		// Use cached SVG image if available
 		const cached = drawingImageCache.get(drawing.id);
 		if (cached) {
 			ctx.drawImage(cached, x, y, drawSize, drawSize);
-			return;
+		} else {
+			// Fallback: draw a placeholder while loading
+			ctx.fillStyle = '#f0f0f0';
+			ctx.fillRect(x, y, drawSize, drawSize);
+			
+			// Cache and re-render when ready
+			getDrawingImage(drawing).then(() => {
+				scheduleRender();
+			});
 		}
 		
-		// Fallback: draw a placeholder while loading
-		ctx.fillStyle = '#f0f0f0';
-		ctx.fillRect(x, y, drawSize, drawSize);
-		
-		// Cache and re-render when ready
-		getDrawingImage(drawing).then(() => {
-			scheduleRender();
-		});
+		if (needsOpacity) {
+			ctx.restore();
+		}
 	}
 
 	function handleWheel(event: WheelEvent) {
@@ -783,7 +1069,7 @@
 
 		// Zoom toward cursor - set target values for smooth animation
 		const zoomFactor = event.deltaY > 0 ? 0.95 : 1.05;
-		const minScale = Math.min(getMinScaleForBounds(), 1);
+		const minScale = Math.max(Math.min(getMinScaleForBounds(), 1), 0.3);
 		const newScale = Math.max(minScale, Math.min(5, targetScale * zoomFactor));
 
 		// Adjust offset to zoom toward cursor
@@ -973,7 +1259,7 @@
 
 			// Calculate new scale based on pinch
 			const scaleChange = currentDistance / initialPinchDistance;
-			const minScale = Math.min(getMinScaleForBounds(), 0.5);
+			const minScale = Math.max(Math.min(getMinScaleForBounds(), 0.5), 0.3);
 			const newScale = Math.max(minScale, Math.min(5, initialPinchScale * scaleChange));
 
 			// Current pinch center
@@ -1115,11 +1401,87 @@
 		ontouchcancel={handleTouchEnd}
 	></canvas>
 
-	<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup} />
+	<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup && introComplete} />
 
-	<div class="controls">
-		<button onclick={fitAllInView}>Fit All</button>
-	</div>
+	{#if introComplete}
+		<div class="controls" class:visible={introComplete}>
+			<button onclick={() => showControlPanel = !showControlPanel} class:active={showControlPanel}>
+				⚙️ Tune
+			</button>
+		</div>
+	{/if}
+
+	{#if showControlPanel && introComplete}
+		<div class="control-panel">
+			<div class="panel-header">
+				<h3>Clustering Settings</h3>
+				<button class="close-btn" onclick={() => showControlPanel = false}>×</button>
+			</div>
+			
+			<div class="panel-section">
+				<h4>Group by</h4>
+				<p class="section-hint">What matters most when grouping?</p>
+				
+				<label class="slider-row">
+					<span class="label-text">🎨 Color</span>
+					<input type="range" min="0" max="2" step="0.1" bind:value={weightColor} />
+					<span class="value">{weightColor.toFixed(1)}</span>
+				</label>
+				<p class="slider-hint">Similar colors used</p>
+				
+				<label class="slider-row">
+					<span class="label-text">🔷 Shape</span>
+					<input type="range" min="0" max="2" step="0.1" bind:value={weightShape} />
+					<span class="value">{weightShape.toFixed(1)}</span>
+				</label>
+				<p class="slider-hint">Similar forms & silhouettes</p>
+				
+				<label class="slider-row">
+					<span class="label-text">✨ Style</span>
+					<input type="range" min="0" max="2" step="0.1" bind:value={weightStyle} />
+					<span class="value">{weightStyle.toFixed(1)}</span>
+				</label>
+				<p class="slider-hint">Similar patterns & techniques</p>
+			</div>
+			
+			<details class="advanced-section">
+				<summary>Advanced</summary>
+				<div class="panel-section">
+					<label class="slider-row">
+						<span class="label-text">Neighbors</span>
+						<input type="range" min="2" max="50" step="1" bind:value={paramNeighbors} />
+						<span class="value">{paramNeighbors}</span>
+					</label>
+					
+					<label class="slider-row">
+						<span class="label-text">Spread</span>
+						<input type="range" min="0.01" max="1" step="0.01" bind:value={paramMinDist} />
+						<span class="value">{paramMinDist.toFixed(2)}</span>
+					</label>
+					
+					<label class="slider-row">
+						<span class="label-text">Quality</span>
+						<input type="range" min="50" max="500" step="10" bind:value={paramEpochs} />
+						<span class="value">{paramEpochs}</span>
+					</label>
+				</div>
+			</details>
+			
+			<button 
+				class="recluster-btn" 
+				onclick={handleRecluster}
+				disabled={isComputing || isAnimatingPositions || drawings.length === 0}
+			>
+				{#if isComputing}
+					Computing...
+				{:else if isAnimatingPositions}
+					Animating...
+				{:else}
+					Re-cluster
+				{/if}
+			</button>
+		</div>
+	{/if}
 
 	{#if drawings.length === 0}
 		<div class="empty-state">
@@ -1199,23 +1561,267 @@
 		position: absolute;
 		bottom: 16px;
 		right: 16px;
+		display: flex;
+		gap: 12px;
+		animation: fadeInUp 0.4s ease-out;
+	}
+
+	@keyframes fadeInUp {
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 
 	.controls button {
 		background: rgba(255, 255, 255, 0.95);
 		border: 1px solid #e0e0e0;
 		color: #000;
-		padding: 8px 14px;
+		padding: 10px 16px;
 		border-radius: 8px;
 		cursor: pointer;
 		font-size: 0.85rem;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 		transition: all 0.15s ease;
+		min-height: 44px; /* Touch target size */
 	}
 
 	.controls button:hover {
 		background: #f0f0f0;
 		border-color: #999;
+	}
+
+	.controls button.active {
+		background: #000;
+		color: #fff;
+		border-color: #000;
+	}
+
+	/* Mobile optimizations for controls */
+	@media (max-width: 768px) {
+		.controls {
+			bottom: 1.25rem;
+			right: 1rem;
+			gap: 10px;
+		}
+
+		.controls button {
+			padding: 12px 16px;
+			font-size: 0.9rem;
+			min-height: 48px;
+			border-radius: 10px;
+		}
+	}
+
+	/* Control Panel */
+	.control-panel {
+		position: absolute;
+		top: 60px;
+		right: 16px;
+		width: 280px;
+		background: rgba(255, 255, 255, 0.98);
+		border: 1px solid #e0e0e0;
+		border-radius: 12px;
+		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+		z-index: 50;
+		overflow: hidden;
+		max-height: calc(100vh - 140px);
+		overflow-y: auto;
+	}
+
+	/* Mobile control panel */
+	@media (max-width: 768px) {
+		.control-panel {
+			top: auto;
+			bottom: 80px;
+			right: 12px;
+			left: 12px;
+			width: auto;
+			max-height: 60vh;
+			border-radius: 16px;
+		}
+	}
+
+	.panel-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 12px 16px;
+		border-bottom: 1px solid #eee;
+		background: #fafafa;
+	}
+
+	.panel-header h3 {
+		margin: 0;
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: #000;
+	}
+
+	.close-btn {
+		background: none;
+		border: none;
+		font-size: 1.4rem;
+		color: #666;
+		cursor: pointer;
+		padding: 0;
+		line-height: 1;
+		transition: color 0.15s;
+	}
+
+	.close-btn:hover {
+		color: #000;
+	}
+
+	.panel-section {
+		padding: 12px 16px;
+		border-bottom: 1px solid #eee;
+	}
+
+	.panel-section:last-of-type {
+		border-bottom: none;
+	}
+
+	.panel-section h4 {
+		margin: 0 0 4px 0;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: #666;
+	}
+
+	.section-hint {
+		margin: 0 0 12px 0;
+		font-size: 0.75rem;
+		color: #999;
+	}
+
+	.slider-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 8px;
+		cursor: pointer;
+	}
+
+	.slider-row:last-child {
+		margin-bottom: 0;
+	}
+
+	.label-text {
+		flex: 0 0 80px;
+		font-size: 0.8rem;
+		color: #333;
+	}
+
+	.slider-row input[type="range"] {
+		flex: 1;
+		height: 4px;
+		-webkit-appearance: none;
+		appearance: none;
+		background: #e0e0e0;
+		border-radius: 2px;
+		outline: none;
+	}
+
+	.slider-row input[type="range"]::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 14px;
+		height: 14px;
+		background: #000;
+		border-radius: 50%;
+		cursor: pointer;
+		transition: transform 0.1s;
+	}
+
+	.slider-row input[type="range"]::-webkit-slider-thumb:hover {
+		transform: scale(1.2);
+	}
+
+	.slider-row input[type="range"]::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		background: #000;
+		border-radius: 50%;
+		cursor: pointer;
+		border: none;
+	}
+
+	.slider-row .value {
+		flex: 0 0 32px;
+		font-size: 0.75rem;
+		color: #666;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.slider-hint {
+		margin: -4px 0 12px 0;
+		font-size: 0.7rem;
+		color: #999;
+		padding-left: 2px;
+	}
+
+	.slider-hint:last-of-type {
+		margin-bottom: 0;
+	}
+
+	/* Advanced section */
+	.advanced-section {
+		border-top: 1px solid #eee;
+	}
+
+	.advanced-section summary {
+		padding: 10px 16px;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: #666;
+		cursor: pointer;
+		user-select: none;
+		transition: color 0.15s;
+	}
+
+	.advanced-section summary:hover {
+		color: #000;
+	}
+
+	.advanced-section[open] summary {
+		border-bottom: 1px solid #eee;
+	}
+
+	.advanced-section .panel-section {
+		border-bottom: none;
+	}
+
+	.recluster-btn {
+		display: block;
+		width: calc(100% - 32px);
+		margin: 12px 16px 16px;
+		padding: 10px 16px;
+		background: #000;
+		color: #fff;
+		border: none;
+		border-radius: 8px;
+		font-size: 0.85rem;
+		font-weight: 500;
+		cursor: pointer;
+		transition: all 0.15s;
+	}
+
+	.recluster-btn:hover:not(:disabled) {
+		background: #333;
+		transform: translateY(-1px);
+	}
+
+	.recluster-btn:disabled {
+		background: #ccc;
+		cursor: not-allowed;
 	}
 
 	.empty-state {

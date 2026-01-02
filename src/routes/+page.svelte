@@ -21,6 +21,9 @@
 		return [...drawings].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 50);
 	});
 
+	// Count unique users
+	let uniqueUserCount = $derived(new Set(drawings.map(d => d.creator)).size);
+
 	// Generate SVG data URL for a drawing thumbnail
 	function getDrawingSvgUrl(pixels: number[]): string {
 		let rects = '';
@@ -81,12 +84,10 @@
 	}
 
 	onMount(async () => {
-		// Check for stored username
+		// Check for stored username (but don't require it)
 		const storedUsername = localStorage.getItem('pixelspace_username');
 		if (storedUsername) {
 			username = storedUsername;
-		} else {
-			showUsernameModal = true;
 		}
 
 		// Fetch drawings
@@ -147,6 +148,7 @@
 	<button
 		class="sidebar-toggle"
 		class:open={sidebarOpen}
+		class:fade-in={!isLoading}
 		onclick={() => (sidebarOpen = !sidebarOpen)}
 		aria-label={sidebarOpen ? 'Close sidebar' : 'Open recent drawings'}
 	>
@@ -195,23 +197,19 @@
 		<button class="sidebar-backdrop" onclick={() => (sidebarOpen = false)} aria-label="Close sidebar"></button>
 	{/if}
 
-	<div class="overlay-controls">
+	<div class="overlay-controls" class:fade-in={!isLoading}>
 		<button class="btn-create" onclick={handleCreateNew}>
 			<span>+</span> Create
 		</button>
 	</div>
 
-	<div class="drawing-count">
-		{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}
+	<div class="drawing-count" class:fade-in={!isLoading}>
+		<span class="count-drawings">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
+		<span class="count-separator"> from </span>
+		<span class="count-users">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
 	</div>
 
-	<div class="top-right-controls">
-		<button class="info-btn" onclick={() => goto('/about')} aria-label="About PixelSpace">
-			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<circle cx="12" cy="12" r="10"/>
-				<path d="M12 16v-4M12 8h.01"/>
-			</svg>
-		</button>
+	<div class="top-right-controls" class:fade-in={!isLoading}>
 		{#if username}
 			<button class="user-badge" onclick={handleChangeUsername}>
 				<span class="avatar">{username[0].toUpperCase()}</span>
@@ -244,6 +242,7 @@
 		position: relative;
 		width: 100vw;
 		height: 100vh;
+		height: 100dvh; /* Dynamic viewport height for mobile */
 		overflow: hidden;
 		background: #fff;
 	}
@@ -266,6 +265,12 @@
 		transition: all 0.2s ease;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 		color: #333;
+		opacity: 0;
+	}
+
+	.sidebar-toggle.fade-in {
+		animation: fadeInUp 0.4s ease-out forwards;
+		animation-delay: 0.1s;
 	}
 
 	.sidebar-toggle:hover {
@@ -452,9 +457,22 @@
 	.overlay-controls {
 		position: fixed;
 		bottom: 2rem;
-		left: 50%;
-		transform: translateX(-50%);
+		left: 0;
+		right: 0;
+		display: flex;
+		justify-content: center;
 		z-index: 100;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.overlay-controls .btn-create {
+		pointer-events: auto;
+	}
+
+	.overlay-controls.fade-in {
+		animation: fadeInUp 0.4s ease-out forwards;
+		animation-delay: 0.2s;
 	}
 
 	.btn-create {
@@ -471,6 +489,7 @@
 		cursor: pointer;
 		transition: all 0.15s ease;
 		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+		min-height: 48px; /* Touch target */
 	}
 
 	.btn-create:hover {
@@ -484,6 +503,18 @@
 		font-weight: 400;
 	}
 
+	@media (max-width: 768px) {
+		.overlay-controls {
+			bottom: 1.25rem;
+		}
+
+		.btn-create {
+			padding: 0.875rem 1.75rem;
+			font-size: 1.05rem;
+			border-radius: 12px;
+		}
+	}
+
 	.drawing-count {
 		position: fixed;
 		bottom: 2rem;
@@ -491,6 +522,27 @@
 		color: #999;
 		font-size: 0.85rem;
 		z-index: 100;
+		opacity: 0;
+	}
+
+	.drawing-count.fade-in {
+		animation: fadeInUp 0.4s ease-out forwards;
+		animation-delay: 0.15s;
+	}
+
+	@media (max-width: 768px) {
+		.drawing-count {
+			bottom: 1.25rem;
+			left: 1rem;
+			font-size: 0.75rem;
+			display: flex;
+			flex-direction: column;
+			line-height: 1.4;
+		}
+
+		.drawing-count .count-separator {
+			display: none;
+		}
 	}
 
 	.top-right-controls {
@@ -501,28 +553,12 @@
 		align-items: center;
 		gap: 0.5rem;
 		z-index: 100;
+		opacity: 0;
 	}
 
-	.info-btn {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		background: rgba(255, 255, 255, 0.9);
-		border: 1px solid #e0e0e0;
-		border-radius: 50%;
-		color: #666;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-	}
-
-	.info-btn:hover {
-		background: #fff;
-		color: #000;
-		border-color: #ccc;
-		transform: scale(1.1);
+	.top-right-controls.fade-in {
+		animation: fadeInUp 0.4s ease-out forwards;
+		animation-delay: 0.1s;
 	}
 
 	.user-badge {
@@ -686,5 +722,17 @@
 	.btn-primary:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* Fade-in animation for controls */
+	@keyframes fadeInUp {
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 </style>

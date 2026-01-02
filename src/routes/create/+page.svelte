@@ -5,6 +5,8 @@
 	import { createDrawing } from '$lib/supabase';
 
 	let username = $state('');
+	let usernameInput = $state('');
+	let showUsernameModal = $state(false);
 	let drawingName = $state('');
 	let isSaving = $state(false);
 	let error = $state('');
@@ -14,9 +16,24 @@
 		if (storedUsername) {
 			username = storedUsername;
 		} else {
-			goto('/');
+			// Show username modal if not set
+			showUsernameModal = true;
 		}
 	});
+
+	function handleSetUsername() {
+		if (usernameInput.trim()) {
+			username = usernameInput.trim();
+			localStorage.setItem('pixelspace_username', username);
+			showUsernameModal = false;
+		}
+	}
+
+	function handleUsernameKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			handleSetUsername();
+		}
+	}
 
 	async function handleSave(savedPixels: number[]) {
 		if (!drawingName.trim()) {
@@ -83,10 +100,12 @@
 			{/if}
 		</div>
 
-		<div class="creator-badge">
-			<span class="avatar">{username[0]?.toUpperCase() ?? '?'}</span>
-			<span class="username">{username}</span>
-		</div>
+		{#if username}
+			<div class="creator-badge">
+				<span class="avatar">{username[0].toUpperCase()}</span>
+				<span class="username">{username}</span>
+			</div>
+		{/if}
 	</main>
 
 	{#if isSaving}
@@ -94,6 +113,30 @@
 			<div class="saving-content">
 				<div class="spinner"></div>
 				<p>Saving your masterpiece...</p>
+			</div>
+		</div>
+	{/if}
+
+	{#if showUsernameModal}
+		<div class="modal-overlay">
+			<div class="modal">
+				<h2>Before you create</h2>
+				<p>Enter a username to sign your artwork</p>
+				<input
+					type="text"
+					placeholder="Your username"
+					bind:value={usernameInput}
+					onkeydown={handleUsernameKeydown}
+					maxlength={20}
+				/>
+				<div class="modal-buttons">
+					<button class="btn-secondary" onclick={() => goto('/')}>
+						Back to Gallery
+					</button>
+					<button class="btn-primary" onclick={handleSetUsername} disabled={!usernameInput.trim()}>
+						Start Creating
+					</button>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -262,5 +305,119 @@
 		color: #666;
 		margin: 0;
 		font-size: 1rem;
+	}
+
+	/* Modal styles */
+	.modal-overlay {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.4);
+		backdrop-filter: blur(8px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+	}
+
+	.modal {
+		background: #fff;
+		border: 1px solid #e0e0e0;
+		border-radius: 16px;
+		padding: 2.5rem;
+		max-width: 400px;
+		width: 90%;
+		text-align: center;
+		animation: modalIn 0.2s ease-out;
+		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+	}
+
+	@keyframes modalIn {
+		from {
+			opacity: 0;
+			transform: scale(0.95) translateY(-10px);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1) translateY(0);
+		}
+	}
+
+	.modal h2 {
+		margin: 0 0 0.5rem 0;
+		color: #000;
+		font-size: 1.5rem;
+	}
+
+	.modal p {
+		margin: 0 0 1.5rem 0;
+		color: #666;
+	}
+
+	.modal input {
+		width: 100%;
+		padding: 0.875rem 1rem;
+		background: #fff;
+		border: 2px solid #e0e0e0;
+		border-radius: 8px;
+		color: #000;
+		font-size: 1rem;
+		margin-bottom: 1rem;
+		transition: border-color 0.15s ease;
+	}
+
+	.modal input:focus {
+		outline: none;
+		border-color: #000;
+	}
+
+	.modal input::placeholder {
+		color: #999;
+	}
+
+	.modal-buttons {
+		display: flex;
+		gap: 0.75rem;
+	}
+
+	.btn-secondary {
+		flex: 1;
+		padding: 0.875rem 1rem;
+		background: #fff;
+		border: 2px solid #e0e0e0;
+		border-radius: 8px;
+		color: #333;
+		font-weight: 600;
+		font-size: 0.95rem;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.btn-secondary:hover {
+		background: #f5f5f5;
+		border-color: #ccc;
+	}
+
+	.btn-primary {
+		flex: 1;
+		padding: 0.875rem 1rem;
+		background: #000;
+		border: none;
+		border-radius: 8px;
+		color: #fff;
+		font-weight: 600;
+		font-size: 0.95rem;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.btn-primary:hover:not(:disabled) {
+		background: #333;
+		transform: translateY(-1px);
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>
