@@ -24,11 +24,29 @@
 		return colorToHex(color);
 	}
 
-	// Render pixels with color support
-	function getPixelStyle(idx: number): string {
-		if (!drawing) return 'background-color: #000';
-		const pixelValue = drawing.pixels[idx] ?? COLOR_WHITE;
-		return `background-color: ${getPixelHexColor(pixelValue)}`;
+	// Generate SVG for pixel-perfect rendering at any resolution
+	function generateSVG(pixels: number[]): string {
+		let rects = '';
+		
+		for (let y = 0; y < GRID_SIZE; y++) {
+			let x = 0;
+			while (x < GRID_SIZE) {
+				const pixelValue = pixels[y * GRID_SIZE + x] ?? COLOR_WHITE;
+				let width = 1;
+				
+				// Run-length encode for efficiency
+				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === pixelValue) {
+					width++;
+				}
+				
+				const hexColor = getPixelHexColor(pixelValue);
+				rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="${hexColor}"/>`;
+				
+				x += width;
+			}
+		}
+		
+		return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_SIZE} ${GRID_SIZE}" shape-rendering="crispEdges">${rects}</svg>`;
 	}
 
 	function formatDate(dateStr: string): string {
@@ -43,6 +61,9 @@
 	// Keep popup within viewport bounds
 	let adjustedX = $derived(Math.min(x, window.innerWidth - 250));
 	let adjustedY = $derived(Math.min(y, window.innerHeight - 300));
+	
+	// Generate SVG data URL for the current drawing
+	let svgDataUrl = $derived(drawing ? 'data:image/svg+xml;base64,' + btoa(generateSVG(drawing.pixels)) : '');
 </script>
 
 {#if visible && drawing}
@@ -51,11 +72,7 @@
 		style="left: {adjustedX + 15}px; top: {adjustedY + 15}px;"
 		role="tooltip"
 	>
-		<div class="preview-grid">
-			{#each Array(GRID_SIZE * GRID_SIZE) as _, idx}
-				<div class="preview-pixel" style={getPixelStyle(idx)}></div>
-			{/each}
-		</div>
+		<img class="preview-svg" src={svgDataUrl} alt={drawing.name} />
 
 		<div class="info">
 			<h3 class="name">{drawing.name}</h3>
@@ -90,21 +107,13 @@
 		}
 	}
 
-	.preview-grid {
-		display: grid;
-		grid-template-columns: repeat(16, 1fr);
-		gap: 0px;
-		background-color: #000;
-		padding: 1px;
-		border-radius: 2px;
+	.preview-svg {
 		width: 160px;
 		height: 160px;
 		margin-bottom: 12px;
-	}
-
-	.preview-pixel {
-		width: 100%;
-		height: 100%;
+		border-radius: 2px;
+		image-rendering: pixelated;
+		image-rendering: crisp-edges;
 	}
 
 	.info {

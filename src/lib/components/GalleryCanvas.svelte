@@ -1485,9 +1485,11 @@
 		const screenX = previewPosition.x * scale + offsetX;
 		const screenY = previewPosition.y * scale + offsetY;
 		const size = DRAWING_SIZE * scale;
+		// Use consistent integer math to avoid sub-pixel rendering artifacts
 		const drawSize = Math.round(size);
-		const x = Math.round(screenX - drawSize / 2);
-		const y = Math.round(screenY - drawSize / 2);
+		const halfSize = (drawSize / 2) | 0;
+		const x = (Math.round(screenX) - halfSize) | 0;
+		const y = (Math.round(screenY) - halfSize) | 0;
 		
 		// Skip if off-screen
 		if (x + drawSize < 0 || x > canvas.width || y + drawSize < 0 || y > canvas.height) {
@@ -1627,9 +1629,11 @@
 	function renderDrawing(drawing: DrawingWithPosition, screenX: number, screenY: number, size: number) {
 		if (!ctx) return;
 
+		// Use consistent integer math to avoid sub-pixel rendering artifacts
 		const drawSize = Math.round(size);
-		const x = Math.round(screenX - drawSize / 2);
-		const y = Math.round(screenY - drawSize / 2);
+		const halfSize = (drawSize / 2) | 0; // Integer division
+		const x = (Math.round(screenX) - halfSize) | 0;
+		const y = (Math.round(screenY) - halfSize) | 0;
 		
 		// Get opacity for this drawing (default to 1 if not in intro animation)
 		const opacity = drawingOpacities.get(drawing.id) ?? 1;
