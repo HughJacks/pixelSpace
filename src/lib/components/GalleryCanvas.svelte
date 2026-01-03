@@ -282,12 +282,12 @@
 		const pos = positions.get(drawingId);
 		if (!pos) return;
 
-		// Animate to center on the drawing
+		// Zoom in a bit for better view - must update scale BEFORE calculating offsets
+		targetScale = Math.max(targetScale, 2);
+		
+		// Animate to center on the drawing (using the updated targetScale)
 		targetOffsetX = canvas.width / 2 - pos.x * targetScale;
 		targetOffsetY = canvas.height / 2 - pos.y * targetScale;
-		
-		// Zoom in a bit for better view
-		targetScale = Math.max(targetScale, 2);
 		
 		// Stop any momentum
 		velocityX = 0;
@@ -428,7 +428,7 @@
 
 	// Drawing size on canvas
 	const DRAWING_SIZE = 56;
-	const DRAWING_PADDING = 48;
+	const DRAWING_PADDING = 24;
 	const MIN_SPACING = DRAWING_SIZE + DRAWING_PADDING * 2;
 
 	// Bounds of all drawings (for fit-all functionality)
@@ -620,6 +620,26 @@
 		}
 	}
 
+	// Calculate spread factor based on number of drawings for consistent density
+	// This ensures the "world" size grows with more drawings to maintain spacing
+	function calculateDensityBasedSpread(numDrawings: number, isMobile: boolean): number {
+		// Base spacing per drawing (area each drawing "owns")
+		const baseSpacing = isMobile ? MIN_SPACING * 1.2 : MIN_SPACING * 1.4;
+		
+		// For N drawings in 2D, we need roughly sqrt(N) * spacing per dimension
+		// Add a density multiplier to control overall spread (higher = more spread out)
+		const densityMultiplier = isMobile ? 1.2 : 1.5;
+		
+		// Calculate spread: sqrt(N) gives us the "side length" of a square grid
+		// that could hold N items, multiplied by spacing and density
+		const spread = Math.sqrt(Math.max(numDrawings, 1)) * baseSpacing * densityMultiplier;
+		
+		// Ensure a minimum spread so few drawings aren't bunched too tightly
+		const minSpread = isMobile ? 400 : 800;
+		
+		return Math.max(spread, minSpread);
+	}
+
 	// Compute positions based on visualization mode
 	function computePositionsForMode(
 		currentDrawings: typeof drawings,
@@ -628,6 +648,7 @@
 	): Map<string, { x: number; y: number }> {
 		const newPositions = new Map<string, { x: number; y: number }>();
 		const isMobile = canvas.width < 768;
+		const numDrawings = currentDrawings.length;
 		
 		if (mode === 'cluster') {
 			// Clear timeline range when not in timeline mode
@@ -644,8 +665,9 @@
 			
 			const rangeX = maxX - minX || 1;
 			const rangeY = maxY - minY || 1;
-			const spreadMultiplier = isMobile ? 3.0 : 1.8;
-			const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
+			
+			// Use density-based spread that scales with number of drawings
+			const spreadFactor = calculateDensityBasedSpread(numDrawings, isMobile);
 
 			currentDrawings.forEach((drawing, i) => {
 				if (embeddings[i]) {
@@ -671,9 +693,10 @@
 			}
 			const yRange = maxY - minY || 1;
 			
-			// Use wider spread for timeline (drawings spread across time)
-			const spreadMultiplier = isMobile ? 4.0 : 2.5;
-			const spreadFactor = Math.max(canvas.width, canvas.height) * spreadMultiplier;
+			// For timeline, X spread is based on time range, Y spread is density-based
+			// Use wider horizontal spread for timeline to accommodate time axis
+			const baseSpread = calculateDensityBasedSpread(numDrawings, isMobile);
+			const spreadFactor = baseSpread * 1.5; // Extra horizontal room for timeline
 			
 			// Store timeline range for axis rendering
 			timelineRange = { minTime, maxTime, spreadFactor };
@@ -683,15 +706,16 @@
 					const timestamp = new Date(drawing.created).getTime();
 					// X = normalized time (oldest left, newest right)
 					const normalizedX = ((timestamp - minTime) / timeRange - 0.5) * spreadFactor;
-					// Y = first UMAP component (similarity)
-					const normalizedY = ((embeddings[i][1] - minY) / yRange - 0.5) * spreadFactor * 0.6;
+					// Y = first UMAP component (similarity) - use smaller vertical spread
+					const normalizedY = ((embeddings[i][1] - minY) / yRange - 0.5) * baseSpread * 0.6;
 					newPositions.set(drawing.id, { x: normalizedX, y: normalizedY });
 				}
 			});
 		}
 
 		// Push apart any overlapping drawings
-		const mobileSpacing = isMobile ? MIN_SPACING * 1.5 : MIN_SPACING;
+		// Use larger spacing on mobile to prevent dense clustering with aliasing issues
+		const mobileSpacing = isMobile ? MIN_SPACING * 1.8 : MIN_SPACING;
 		resolveCollisions(newPositions, mobileSpacing);
 		
 		return newPositions;
