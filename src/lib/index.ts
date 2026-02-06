@@ -2,6 +2,7 @@
 export { default as PixelEditor } from './components/PixelEditor.svelte';
 export { default as GalleryCanvas } from './components/GalleryCanvas.svelte';
 export { default as DrawingPopup } from './components/DrawingPopup.svelte';
+export { default as CreateDrawing } from './components/CreateDrawing.svelte';
 
 export * from './types';
 export * from './palette';

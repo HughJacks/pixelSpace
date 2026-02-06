@@ -169,7 +169,7 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 0.75rem;
+		gap: 0.5rem;
 		width: 100%;
 		max-height: 100%;
 		min-height: 0;
@@ -177,7 +177,7 @@
 
 	@media (min-width: 768px) {
 		.pixel-editor {
-			gap: 1.5rem;
+			gap: 0.75rem;
 		}
 	}
 
@@ -185,26 +185,23 @@
 		display: flex;
 		flex-direction: row;
 		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		background: #fff;
-		border: 1px solid #e0e0e0;
-		border-radius: 10px;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+		gap: 0.375rem;
+		padding: 0.25rem 0.5rem;
+		background: #000;
+		border: 1px solid #333;
 		flex-shrink: 0;
 	}
 
 	.color-swatches {
 		display: grid;
 		grid-template-columns: repeat(8, 1fr);
-		gap: 0.25rem;
+		gap: 0.125rem;
 	}
 
 	.color-swatch {
-		width: 28px;
-		height: 28px;
-		border: 2px solid #ddd;
-		border-radius: 5px;
+		width: 24px;
+		height: 24px;
+		border: 1px solid #333;
 		cursor: pointer;
 		transition: all 0.15s ease;
 		padding: 0;
@@ -212,74 +209,66 @@
 
 	@media (min-width: 480px) {
 		.palette-bar {
-			gap: 0.75rem;
-			padding: 0.75rem 1rem;
-			border-radius: 12px;
+			gap: 0.5rem;
+			padding: 0.375rem 0.625rem;
 		}
 
 		.color-swatches {
-			gap: 0.375rem;
+			gap: 0.1875rem;
 		}
 
 		.color-swatch {
-			width: 32px;
-			height: 32px;
-			border-radius: 6px;
+			width: 28px;
+			height: 28px;
 		}
 	}
 
 	.color-swatch:hover {
-		transform: scale(1.1);
-		border-color: #999;
+		border-color: #fff;
 	}
 
 	.color-swatch.active {
-		border-color: #000;
-		box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000;
-		transform: scale(1.1);
+		border-color: #fff;
+		outline: 2px solid #fff;
+		outline-offset: 1px;
 	}
 
 	.tool-btn {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.875rem;
-		background: #f8f8f8;
-		border: 1px solid #e0e0e0;
-		border-radius: 8px;
+		gap: 0.375rem;
+		padding: 0.25rem 0.5rem;
+		background: #000;
+		border: 1px solid #333;
 		cursor: pointer;
 		transition: all 0.15s ease;
-		font-size: 0.85rem;
+		font-size: 0.7rem;
 		font-weight: 500;
-		color: #666;
+		color: #fff;
 	}
 
 	.tool-btn:hover {
-		background: #f0f0f0;
-		border-color: #ccc;
-		color: #333;
+		background: #111;
+		border-color: #fff;
 	}
 
 	.grid-wrapper {
 		padding: 1px;
-		background: #ccc;
-		border-radius: 2px;
-		box-shadow:
-			0 4px 20px rgba(0, 0, 0, 0.12),
-			0 0 0 1px rgba(0, 0, 0, 0.08);
+		background: #333;
 		/* Fit within viewport - account for name input, palette, save button, creator badge, gaps, and padding */
-		--grid-size: min(calc(100vw - 3rem), calc(100dvh - 340px), 450px);
+		--grid-size: min(calc(100vw - 3rem), calc(100dvh - 300px), 450px);
 		width: var(--grid-size);
 		height: var(--grid-size);
 		flex-shrink: 0;
 		/* Allow canvas to show through when drawing */
-		transition: box-shadow 0.3s ease;
+		transition: opacity 0.3s ease;
+		opacity: 0.85;
 	}
 
 	@media (max-width: 480px) {
 		.grid-wrapper {
 			/* Mobile: tighter constraints, no creator badge shown */
-			--grid-size: min(calc(100vw - 1.5rem), calc(100dvh - 240px));
+			--grid-size: min(calc(100vw - 1.5rem), calc(100dvh - 220px));
 		}
 	}
 
@@ -287,7 +276,7 @@
 		display: grid;
 		grid-template-columns: repeat(16, 1fr);
 		gap: 1px;
-		background: #ccc;
+		background: #333;
 		touch-action: none;
 		user-select: none;
 		cursor: crosshair;

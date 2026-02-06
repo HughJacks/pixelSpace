@@ -263,17 +263,87 @@
 	interface Props {
 		drawings: Drawing[];
 		onCenterOnDrawing?: (fn: (drawingId: string) => void) => void;
-		// Preview mode props - for showing where a new drawing would land
-		previewMode?: boolean;
-		previewPixels?: number[];
+		onDrawingClick?: (drawingId: string) => void;
+	// Preview mode props - for showing where a new drawing would land
+	// previewMode = true: full preview mode (no interaction, uses shared positions)
+	// previewMode = false but previewPixels provided: show preview while keeping interaction
+	previewMode?: boolean;
+	previewPixels?: number[];
+	// When true, render preview at full opacity (used after saving to show the drawing persisted)
+	previewSaved?: boolean;
+		// Callback to get current preview position (for placing saved drawings)
+		onPreviewPositionChange?: (position: { x: number; y: number } | null) => void;
+		// Position to use for a newly saved drawing (bypasses UMAP recalculation)
+		pendingNewDrawingPosition?: { x: number; y: number } | null;
+		// Shared view position (bindable)
+		viewScale?: number;
+		viewOffsetX?: number;
+		viewOffsetY?: number;
+		onViewChange?: (scale: number, offsetX: number, offsetY: number) => void;
+		// Shared positions (to avoid recomputing in preview mode)
+		sharedPositions?: Map<string, { x: number; y: number }>;
+		onPositionsComputed?: (positions: Map<string, { x: number; y: number }>) => void;
+		// Control panel state (bindable from parent)
+		showControlPanel?: boolean;
+		// Highlighted drawing (for recent mode - others will be faded)
+		highlightedDrawingId?: string | null;
+		// Clustering controls (bindable for parent to control)
+		clusterWeightColor?: boolean;
+		clusterWeightShape?: boolean;
+		clusterWeightStyle?: boolean;
+		clusterNeighbors?: number;
+		clusterSpread?: number;
+		clusterQuality?: number;
+		clusterMode?: 'cluster' | 'timeline';
+		onModeSwitch?: (mode: 'cluster' | 'timeline') => void;
+		onClusterStateChange?: (isComputing: boolean, isAnimating: boolean) => void;
+		// Callback to expose recluster function to parent
+		onReclusterReady?: (reclusterFn: () => void) => void;
 	}
 
-	let { drawings, onCenterOnDrawing, previewMode = false, previewPixels = [] }: Props = $props();
+	let { 
+		drawings, 
+		onCenterOnDrawing,
+		onDrawingClick,
+		previewMode = false, 
+		previewPixels = [],
+		previewSaved = false,
+		onPreviewPositionChange,
+		pendingNewDrawingPosition = null,
+		viewScale,
+		viewOffsetX,
+		viewOffsetY,
+		onViewChange,
+		sharedPositions,
+		onPositionsComputed,
+		showControlPanel = $bindable(false),
+		highlightedDrawingId = null,
+		clusterWeightColor = $bindable(true),
+		clusterWeightShape = $bindable(true),
+		clusterWeightStyle = $bindable(true),
+		clusterNeighbors = $bindable(15),
+		clusterSpread = $bindable(0.1),
+		clusterQuality = $bindable(150),
+		clusterMode = $bindable<'cluster' | 'timeline'>('cluster'),
+		onModeSwitch,
+		onClusterStateChange,
+		onReclusterReady
+	}: Props = $props();
+	
+	// Derived: show preview when pixels are provided (works with or without full previewMode)
+	let showPreview = $derived(previewPixels.length > 0 && previewPixels.some(p => p !== COLOR_WHITE));
 
 	// Expose centerOnDrawing method to parent
 	$effect(() => {
 		if (onCenterOnDrawing) {
 			onCenterOnDrawing(centerOnDrawing);
+		}
+	});
+	
+	// Expose recluster method to parent
+	$effect(() => {
+		if (onReclusterReady) {
+			onReclusterReady(handleRecluster);
 		}
 	});
 
@@ -300,10 +370,32 @@
 	let ctx: CanvasRenderingContext2D | null = null;
 	let container: HTMLDivElement;
 
-	// Transform state
-	let scale = $state(2.5);
-	let offsetX = $state(0);
-	let offsetY = $state(0);
+	// Transform state - use props if provided, otherwise defaults
+	let scale = $state(viewScale ?? 2.5);
+	let offsetX = $state(viewOffsetX ?? 0);
+	let offsetY = $state(viewOffsetY ?? 0);
+	
+	// Sync external view changes to internal state
+	$effect(() => {
+		if (viewScale !== undefined && Math.abs(viewScale - scale) > 0.001) {
+			scale = viewScale;
+			targetScale = viewScale;
+		}
+	});
+	
+	$effect(() => {
+		if (viewOffsetX !== undefined && Math.abs(viewOffsetX - offsetX) > 0.001) {
+			offsetX = viewOffsetX;
+			targetOffsetX = viewOffsetX;
+		}
+	});
+	
+	$effect(() => {
+		if (viewOffsetY !== undefined && Math.abs(viewOffsetY - offsetY) > 0.001) {
+			offsetY = viewOffsetY;
+			targetOffsetY = viewOffsetY;
+		}
+	});
 
 	// Interaction state
 	let isDragging = $state(false);
@@ -330,12 +422,12 @@
 	// Momentum and smoothing state
 	let velocityX = 0;
 	let velocityY = 0;
-	let targetScale = 2.5;
-	let targetOffsetX = 0;
-	let targetOffsetY = 0;
+	let targetScale = viewScale ?? 2.5;
+	let targetOffsetX = viewOffsetX ?? 0;
+	let targetOffsetY = viewOffsetY ?? 0;
 	let animating = false;
 	const FRICTION = 0.92;
-	const ZOOM_SMOOTHING = 0.15;
+	const ZOOM_SMOOTHING = 0.28;
 	const MIN_VELOCITY = 0.1;
 
 	// Popup state
@@ -401,12 +493,10 @@
 	let previewComputeTimeout: ReturnType<typeof setTimeout> | null = null;
 	let cachedDrawingFeatures: Map<string, number[]> = new Map();
 
-	// Control panel state
-	let showControlPanel = $state(false);
+	// Control panel is now a bindable prop from parent
 	
-	// Visualization mode: 'cluster' (2D UMAP) or 'timeline' (X=time, Y=1D UMAP)
-	type VisualizationMode = 'cluster' | 'timeline';
-	let visualizationMode = $state<VisualizationMode>('cluster');
+	// Visualization mode synced from props
+	let visualizationMode = $derived(clusterMode);
 	
 	// Store last UMAP embeddings to reuse when switching modes
 	let lastEmbeddings: [number, number][] | null = null;
@@ -415,16 +505,15 @@
 	// Timeline axis data (for rendering the time axis)
 	let timelineRange: { minTime: number; maxTime: number; spreadFactor: number } | null = null;
 	
-	// User-friendly feature weights (0-2 range, 1 = normal)
-	// These map to the technical feature groups internally
-	let weightColor = $state(1);  // → color histogram
-	let weightShape = $state(1);  // → structure + components + spatial
-	let weightStyle = $state(1);  // → adjacency + symmetry
+	// Feature weights derived from props (1.0 if on, 0.0 if off)
+	let weightColor = $derived(clusterWeightColor ? 1.0 : 0.0);
+	let weightShape = $derived(clusterWeightShape ? 1.0 : 0.0);
+	let weightStyle = $derived(clusterWeightStyle ? 1.0 : 0.0);
 	
-	// UMAP parameters
-	let paramNeighbors = $state(15);
-	let paramMinDist = $state(0.1);
-	let paramEpochs = $state(150);
+	// UMAP parameters derived from props
+	let paramNeighbors = $derived(clusterNeighbors);
+	let paramMinDist = $derived(clusterSpread);
+	let paramEpochs = $derived(clusterQuality);
 
 	// Drawing size on canvas
 	const DRAWING_SIZE = 56;
@@ -537,23 +626,91 @@
 		return { x: avgX, y: avgY };
 	}
 
-	// Pan to the preview position
+	// Track last pan position to avoid excessive panning
+	let lastPanPosition: { x: number; y: number } | null = null;
+	let hasPannedToPreview = false;
+	
+	// Pan to the preview position (only on significant changes)
 	function panToPreview(position: { x: number; y: number }) {
 		if (!canvas) return;
 		
-		// Animate to center on the preview position
-		targetOffsetX = canvas.width / 2 - position.x * targetScale;
-		targetOffsetY = canvas.height / 2 - position.y * targetScale;
+		// On mobile (narrow screens), offset the view so preview shows in top third
+		// This leaves room for the create panel at the bottom
+		const isMobile = canvas.width < 768;
+		const verticalOffset = isMobile ? canvas.height * 0.25 : 0;
 		
-		// Zoom in slightly for better visibility
-		targetScale = Math.max(targetScale, 1.5);
+		// Calculate distance from current view center to preview position
+		const viewCenterX = (canvas.width / 2 - offsetX) / scale;
+		const viewCenterY = ((canvas.height / 2 - verticalOffset) - offsetY) / scale;
+		const distToCenter = Math.sqrt(
+			Math.pow(position.x - viewCenterX, 2) + 
+			Math.pow(position.y - viewCenterY, 2)
+		);
 		
-		// Stop any momentum
-		velocityX = 0;
-		velocityY = 0;
+		// Check if position changed significantly from last pan
+		let positionChangedSignificantly = true;
+		if (lastPanPosition) {
+			const distFromLast = Math.sqrt(
+				Math.pow(position.x - lastPanPosition.x, 2) + 
+				Math.pow(position.y - lastPanPosition.y, 2)
+			);
+			// Only consider it significant if moved more than 1.5x the drawing size
+			positionChangedSignificantly = distFromLast > DRAWING_SIZE * 1.5;
+		}
 		
-		startAnimation();
+		// Check if preview is visible in the top portion of screen (accounting for create panel)
+		const screenX = position.x * scale + offsetX;
+		const screenY = position.y * scale + offsetY;
+		const padding = DRAWING_SIZE * scale * 2;
+		const visibleHeight = isMobile ? canvas.height * 0.5 : canvas.height; // Only top half on mobile
+		const isOnScreen = 
+			screenX >= -padding && screenX <= canvas.width + padding &&
+			screenY >= -padding && screenY <= visibleHeight + padding;
+		
+		// Pan to preview if:
+		// 1. First time (haven't panned yet), OR
+		// 2. Preview is off-screen, OR
+		// 3. Position changed significantly
+		const shouldPan = !hasPannedToPreview || !isOnScreen || (positionChangedSignificantly && distToCenter > DRAWING_SIZE * 3);
+		
+		if (shouldPan) {
+			// Animate to show preview in top portion of screen (offset down on mobile)
+			targetOffsetX = canvas.width / 2 - position.x * targetScale;
+			targetOffsetY = (canvas.height / 2 - verticalOffset) - position.y * targetScale;
+			
+			// Only zoom if we're zoomed out too far to see details
+			if (targetScale < 1.2) {
+				targetScale = 1.5;
+			}
+			
+			// Stop any momentum
+			velocityX = 0;
+			velocityY = 0;
+			
+			lastPanPosition = { ...position };
+			hasPannedToPreview = true;
+			
+			startAnimation();
+		}
 	}
+	
+	// Reset pan tracking when preview ends
+	$effect(() => {
+		if (!showPreview) {
+			lastPanPosition = null;
+			hasPannedToPreview = false;
+			previewPosition = null;
+		}
+	});
+	
+	// Notify parent when preview position changes
+	$effect(() => {
+		// Explicitly read previewPosition to track it as a dependency
+		const pos = previewPosition;
+		if (onPreviewPositionChange) {
+			onPreviewPositionChange(pos);
+		}
+	});
 
 	// Resolve overlapping positions using spatial grid (O(n) per iteration instead of O(n²))
 	function resolveCollisions(positionsMap: Map<string, { x: number; y: number }>, minDistance: number, iterations = 8) {
@@ -644,7 +801,7 @@
 	function computePositionsForMode(
 		currentDrawings: typeof drawings,
 		embeddings: [number, number][],
-		mode: VisualizationMode
+		mode: 'cluster' | 'timeline'
 	): Map<string, { x: number; y: number }> {
 		const newPositions = new Map<string, { x: number; y: number }>();
 		const isMobile = canvas.width < 768;
@@ -721,41 +878,62 @@
 		return newPositions;
 	}
 
-	// Switch visualization mode and recompute positions
-	function switchVisualizationMode(mode: VisualizationMode) {
+	// Watch for mode changes from props
+	let lastMode: 'cluster' | 'timeline' = clusterMode;
+	$effect(() => {
+		const newMode = clusterMode;
+		if (newMode !== lastMode && lastEmbeddings && lastEmbeddings.length > 0) {
+			lastMode = newMode;
+			
+			// Get current drawings that match stored embeddings
+			const currentDrawings = untrack(() => drawings);
+			
+			// Verify embeddings match current drawings
+			if (lastDrawingIds.length !== currentDrawings.length) {
+				// Data changed, need to recompute UMAP
+				runUMAP(true);
+				return;
+			}
+			
+			// Recompute positions with new mode
+			const newPositions = computePositionsForMode(currentDrawings, lastEmbeddings, newMode);
+			
+			// Update bounds
+			let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+			for (const pos of newPositions.values()) {
+				bMinX = Math.min(bMinX, pos.x);
+				bMaxX = Math.max(bMaxX, pos.x);
+				bMinY = Math.min(bMinY, pos.y);
+				bMaxY = Math.max(bMaxY, pos.y);
+			}
+			bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
+			
+			// Animate to new positions
+			oldPositions = new Map(positions);
+			targetPositions = newPositions;
+			startPositionAnimation();
+			
+			// Zoom out and center to show all images after mode switch
+			setTimeout(() => {
+				fitAllInView(true, true); // animate=true, maxZoomOut=true
+			}, POSITION_ANIMATION_DURATION * 0.2);
+		}
+		lastMode = newMode;
+	});
+	
+	// Legacy function for compatibility
+	function switchVisualizationMode(mode: 'cluster' | 'timeline') {
 		if (mode === visualizationMode) return;
-		if (!lastEmbeddings || lastEmbeddings.length === 0) return;
-		
-		visualizationMode = mode;
-		
-		// Get current drawings that match stored embeddings
-		const currentDrawings = untrack(() => drawings);
-		
-		// Verify embeddings match current drawings
-		if (lastDrawingIds.length !== currentDrawings.length) {
-			// Data changed, need to recompute UMAP
-			runUMAP(true);
-			return;
-		}
-		
-		// Recompute positions with new mode
-		const newPositions = computePositionsForMode(currentDrawings, lastEmbeddings, mode);
-		
-		// Update bounds
-		let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
-		for (const pos of newPositions.values()) {
-			bMinX = Math.min(bMinX, pos.x);
-			bMaxX = Math.max(bMaxX, pos.x);
-			bMinY = Math.min(bMinY, pos.y);
-			bMaxY = Math.max(bMaxY, pos.y);
-		}
-		bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
-		
-		// Animate to new positions
-		oldPositions = new Map(positions);
-		targetPositions = newPositions;
-		startPositionAnimation();
+		clusterMode = mode;
+		onModeSwitch?.(mode);
 	}
+	
+	// Notify parent of computing/animating state changes
+	$effect(() => {
+		const computing = isComputing;
+		const animating = isAnimatingPositions;
+		onClusterStateChange?.(computing, animating);
+	});
 
 	// Schedule a render on next animation frame
 	function scheduleRender() {
@@ -795,6 +973,11 @@
 			scale = targetScale;
 			offsetX = targetOffsetX;
 			offsetY = targetOffsetY;
+		}
+
+		// Notify parent of view changes
+		if (onViewChange) {
+			onViewChange(scale, offsetX, offsetY);
 		}
 
 		if (needsAnimation) {
@@ -996,6 +1179,11 @@
 		}
 		resizeCanvas();
 
+		// Skip worker initialization in preview mode - we use shared positions instead
+		if (previewMode) {
+			return;
+		}
+
 		// Initialize UMAP worker
 		worker = new Worker(new URL('$lib/workers/umap.worker.ts', import.meta.url), {
 			type: 'module'
@@ -1020,6 +1208,10 @@
 					lastEmbeddings = embeddings;
 					lastDrawingIds = currentDrawings.map(d => d.id);
 					
+					// Also update the tracked IDs set for new drawing detection
+					trackedDrawingIds = new Set(currentDrawings.map(d => d.id));
+					lastDrawingsLength = currentDrawings.length;
+					
 					// Compute positions based on current visualization mode
 					const newPositions = computePositionsForMode(currentDrawings, embeddings, currentMode);
 
@@ -1035,6 +1227,11 @@
 						bMaxY = Math.max(bMaxY, pos.y);
 					}
 					bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
+					
+					// Notify parent of computed positions (for sharing with preview mode)
+					if (onPositionsComputed) {
+						onPositionsComputed(newPositions);
+					}
 					
 					// Pre-cache all drawing images for fast rendering
 					await cacheAllDrawingImages(currentDrawings);
@@ -1072,10 +1269,16 @@
 							markGallerySeen();
 						}
 					} else if (positions.size > 0) {
-						// Store old positions and start animation to new positions
+						// Store old positions and start animation to new positions (reclustering)
 						oldPositions = new Map(positions);
 						targetPositions = newPositions;
 						startPositionAnimation();
+						
+						// Zoom out and center to show all images after reclustering
+						// Use a slight delay so the animation starts smoothly
+						setTimeout(() => {
+							fitAllInView(true, true); // animate=true, maxZoomOut=true
+						}, POSITION_ANIMATION_DURATION * 0.2);
 					} else {
 						// Fallback - set positions directly and fit view
 						positions = newPositions;
@@ -1095,29 +1298,90 @@
 	// Track drawings length to trigger UMAP, but use untrack for the actual computation
 	// to avoid creating deep reactive dependencies on every pixel value
 	let lastDrawingsLength = 0;
+	let trackedDrawingIds = new Set<string>();
 	
 	$effect(() => {
 		const currentLength = drawings.length;
+		const currentIds = new Set(drawings.map(d => d.id));
+		// Read pendingNewDrawingPosition to track it as a dependency
+		const pendingPosition = pendingNewDrawingPosition;
+		
+		// In preview mode with shared positions, use those instead of computing
+		if (previewMode && sharedPositions && sharedPositions.size > 0) {
+			if (positions.size === 0) {
+				positions = new Map(sharedPositions);
+				introComplete = true;
+				// Set full opacity for all drawings
+				const fullOpacities = new Map<string, number>();
+				for (const drawing of drawings) {
+					fullOpacities.set(drawing.id, 1);
+				}
+				drawingOpacities = fullOpacities;
+				lastDrawingsLength = currentLength;
+				trackedDrawingIds = currentIds;
+			}
+			return;
+		}
+		
+		// Check if a new drawing was added and we have a pending position for it
+		if (currentLength === lastDrawingsLength + 1 && pendingPosition && positions.size > 0) {
+			// Find the new drawing (not in trackedDrawingIds)
+			const newDrawing = drawings.find(d => !trackedDrawingIds.has(d.id));
+			if (newDrawing) {
+				// Place the new drawing at the pending position
+				const newPositions = new Map(positions);
+				newPositions.set(newDrawing.id, { ...pendingPosition });
+				positions = newPositions;
+				
+				// Set full opacity for the new drawing immediately
+				const newOpacities = new Map(drawingOpacities);
+				newOpacities.set(newDrawing.id, 1);
+				drawingOpacities = newOpacities;
+				
+				// Update tracking
+				lastDrawingsLength = currentLength;
+				trackedDrawingIds = currentIds;
+				
+				// Notify parent of updated positions
+				if (onPositionsComputed) {
+					onPositionsComputed(positions);
+				}
+				
+				scheduleRender();
+				return; // Skip UMAP recalculation
+			}
+		}
 		
 		// Only run UMAP if:
 		// 1. We have drawings
 		// 2. Worker is ready
 		// 3. Not already computing
 		// 4. Drawings count has changed (prevents re-running on same data)
-		if (currentLength > 0 && worker && !isComputing && currentLength !== lastDrawingsLength) {
+		// 5. Not in preview mode (preview should use shared positions)
+		if (currentLength > 0 && worker && !isComputing && currentLength !== lastDrawingsLength && !previewMode) {
 			lastDrawingsLength = currentLength;
+			trackedDrawingIds = currentIds;
 			// Use untrack to read drawings without creating deep dependencies
 			untrack(() => runUMAP());
 		}
 	});
 
-	// Watch previewPixels and compute predicted position when in preview mode
+	// Watch previewPixels and compute predicted position when preview is shown
 	$effect(() => {
-		if (!previewMode) return;
-		
-		// Read pixels length to track changes
+		// Read pixels to track changes - compute preview when pixels have content
 		const pixelsLength = previewPixels.length;
 		if (pixelsLength === 0) return;
+		
+		// Don't recompute position for saved preview - keep it where it was placed
+		if (previewSaved) return;
+		
+		// Check if there's any non-white content
+		const hasContent = previewPixels.some(p => p !== COLOR_WHITE);
+		if (!hasContent) {
+			// Clear preview position when canvas is empty
+			previewPosition = null;
+			return;
+		}
 		
 		// Debounce the computation
 		if (previewComputeTimeout) {
@@ -1152,7 +1416,9 @@
 		const _opacities = drawingOpacities;
 		const _mode = visualizationMode; // Track mode for timeline axis
 		const _previewPos = previewPosition; // Track preview position
-		const _previewMode = previewMode;
+		const _showPreview = showPreview; // Track preview state
+		const _previewSaved = previewSaved; // Track preview saved state for opacity change
+		const _highlighted = highlightedDrawingId; // Track highlighted drawing for recent mode
 		
 		if (ctx && _drawings) {
 			scheduleRender();
@@ -1250,17 +1516,24 @@
 	// Fit all drawings in the viewport
 	// animate = true: smoothly animate to the fit position
 	// animate = false: snap immediately (for initial load)
-	function fitAllInView(animate = false) {
+	// maxZoomOut = true: zoom out as far as needed to show all drawings (no minimum scale)
+	function fitAllInView(animate = false, maxZoomOut = false) {
 		if (positions.size === 0) return;
 		
 		const fitScale = getMinScaleForBounds();
 		const centerX = (bounds.minX + bounds.maxX) / 2;
 		const centerY = (bounds.minY + bounds.maxY) / 2;
 		
-		// On mobile, start more zoomed in so drawings are larger and visible
-		// Use a higher minimum scale for mobile devices
-		const minScale = isMobileView() ? 0.8 : 0.5;
-		const finalScale = Math.max(fitScale, minScale);
+		let finalScale: number;
+		if (maxZoomOut) {
+			// Zoom out as far as needed to show all drawings
+			finalScale = fitScale;
+		} else {
+			// On mobile, start more zoomed in so drawings are larger and visible
+			// Use a higher minimum scale for mobile devices
+			const minScale = isMobileView() ? 0.8 : 0.5;
+			finalScale = Math.max(fitScale, minScale);
+		}
 		
 		targetScale = finalScale;
 		targetOffsetX = canvas.width / 2 - centerX * finalScale;
@@ -1442,8 +1715,8 @@
 			renderDrawing(drawing, screenX, screenY, size);
 		}
 
-		// Render preview drawing if in preview mode
-		if (previewMode && previewPosition && previewPixels.length > 0) {
+		// Render preview drawing if showing preview (works with or without full previewMode)
+		if (showPreview && previewPosition) {
 			renderPreviewDrawing();
 		}
 	}
@@ -1478,7 +1751,7 @@
 	// Cache for preview image
 	let previewImageCache: { pixels: string; img: HTMLImageElement } | null = null;
 
-	// Render the preview drawing with glow effect
+	// Render the preview drawing as a ghost
 	function renderPreviewDrawing() {
 		if (!ctx || !previewPosition) return;
 		
@@ -1513,39 +1786,9 @@
 		
 		ctx.save();
 		
-		// Draw glow effect
-		ctx.shadowColor = 'rgba(59, 130, 246, 0.6)';
-		ctx.shadowBlur = 20 * scale;
-		ctx.shadowOffsetX = 0;
-		ctx.shadowOffsetY = 0;
-		
-		// Draw a rounded rect background for the glow
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-		ctx.beginPath();
-		ctx.roundRect(x - 4, y - 4, drawSize + 8, drawSize + 8, 4);
-		ctx.fill();
-		
-		// Reset shadow for the actual drawing
-		ctx.shadowColor = 'transparent';
-		ctx.shadowBlur = 0;
-		
-		// Draw border
-		ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
-		ctx.lineWidth = 2;
-		ctx.beginPath();
-		ctx.roundRect(x - 4, y - 4, drawSize + 8, drawSize + 8, 4);
-		ctx.stroke();
-		
-		// Draw the preview image with slight transparency
-		ctx.globalAlpha = 0.85;
+		// Draw the preview image: full opacity if saved, semi-transparent if still drafting
+		ctx.globalAlpha = previewSaved ? 1.0 : 0.5;
 		ctx.drawImage(img, x, y, drawSize, drawSize);
-		
-		// Draw "Preview" label
-		ctx.globalAlpha = 1;
-		ctx.fillStyle = 'rgba(59, 130, 246, 0.9)';
-		ctx.font = `bold ${Math.max(10, 12 * scale)}px system-ui, -apple-system, sans-serif`;
-		ctx.textAlign = 'center';
-		ctx.fillText('Preview', screenX, y + drawSize + 16 * scale);
 		
 		ctx.restore();
 	}
@@ -1636,7 +1879,12 @@
 		const y = (Math.round(screenY) - halfSize) | 0;
 		
 		// Get opacity for this drawing (default to 1 if not in intro animation)
-		const opacity = drawingOpacities.get(drawing.id) ?? 1;
+		let opacity = drawingOpacities.get(drawing.id) ?? 1;
+		
+		// Apply highlight mode fading - fade non-highlighted drawings
+		if (highlightedDrawingId && drawing.id !== highlightedDrawingId) {
+			opacity *= 0.15; // Fade to 15% opacity
+		}
 		
 		// Skip if fully transparent
 		if (opacity <= 0) return;
@@ -1706,6 +1954,10 @@
 			isDragging = true;
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
+			// Record for click detection
+			mouseDownX = event.clientX;
+			mouseDownY = event.clientY;
+			mouseDownTime = Date.now();
 			// Stop momentum when starting new drag
 			velocityX = 0;
 			velocityY = 0;
@@ -1733,6 +1985,11 @@
 			offsetY += deltaY;
 			targetOffsetX = offsetX;
 			targetOffsetY = offsetY;
+			
+			// Notify parent of view changes
+			if (onViewChange) {
+				onViewChange(scale, offsetX, offsetY);
+			}
 			
 			lastMouseX = event.clientX;
 			lastMouseY = event.clientY;
@@ -1765,12 +2022,34 @@
 		showPopup = found !== null;
 	}
 
+	// Track mouse down position for click detection
+	let mouseDownX = 0;
+	let mouseDownY = 0;
+	let mouseDownTime = 0;
+	const CLICK_THRESHOLD = 5; // max movement in pixels for click
+	const CLICK_DURATION = 300; // max duration in ms for click
+
 	function handlePointerUp(event: PointerEvent) {
 		// Skip if touch (touch events handle this)
 		if (event.pointerType === 'touch') return;
 		
 		isDragging = false;
 		canvas.releasePointerCapture(event.pointerId);
+		
+		// Check if this was a click (minimal movement, short duration)
+		const dx = event.clientX - mouseDownX;
+		const dy = event.clientY - mouseDownY;
+		const distance = Math.sqrt(dx * dx + dy * dy);
+		const duration = Date.now() - mouseDownTime;
+		
+		if (distance < CLICK_THRESHOLD && duration < CLICK_DURATION) {
+			// This was a click - check if we clicked on a drawing
+			const clickedDrawing = findDrawingAtPoint(event.clientX, event.clientY);
+			if (clickedDrawing && onDrawingClick) {
+				onDrawingClick(clickedDrawing.id);
+				return; // Don't start momentum after click
+			}
+		}
 		
 		// Start momentum animation if we have velocity
 		if (Math.abs(velocityX) > MIN_VELOCITY || Math.abs(velocityY) > MIN_VELOCITY) {
@@ -1897,6 +2176,11 @@
 			targetOffsetX = offsetX;
 			targetOffsetY = offsetY;
 
+			// Notify parent of view changes
+			if (onViewChange) {
+				onViewChange(scale, offsetX, offsetY);
+			}
+
 			scheduleRender();
 		} else if (event.touches.length === 1 && isDragging && !isPinching) {
 			// Single touch pan
@@ -1912,6 +2196,11 @@
 			offsetY += deltaY;
 			targetOffsetX = offsetX;
 			targetOffsetY = offsetY;
+			
+			// Notify parent of view changes
+			if (onViewChange) {
+				onViewChange(scale, offsetX, offsetY);
+			}
 			
 			lastMouseX = touch.clientX;
 			lastMouseY = touch.clientY;
@@ -1966,11 +2255,16 @@
 					const tappedDrawing = findDrawingAtPoint(endedTouch.clientX, endedTouch.clientY);
 					
 					if (tappedDrawing) {
-						// Show popup for tapped drawing
-						hoveredDrawing = tappedDrawing;
-						mouseX = endedTouch.clientX;
-						mouseY = endedTouch.clientY;
-						showPopup = true;
+						// Call click handler if provided
+						if (onDrawingClick) {
+							onDrawingClick(tappedDrawing.id);
+						} else {
+							// Fallback: show popup for tapped drawing
+							hoveredDrawing = tappedDrawing;
+							mouseX = endedTouch.clientX;
+							mouseY = endedTouch.clientY;
+							showPopup = true;
+						}
 					} else {
 						// Tapped empty space - dismiss popup
 						showPopup = false;
@@ -2008,6 +2302,7 @@
 	<canvas
 		bind:this={canvas}
 		class:preview-mode={previewMode}
+		class:hovering-drawing={hoveredDrawing !== null && !isDragging}
 		onwheel={handleWheel}
 		onpointerdown={handlePointerDown}
 		onpointermove={handlePointerMove}
@@ -2020,118 +2315,9 @@
 	></canvas>
 
 	{#if !previewMode}
-		<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup && introComplete} />
-
-		{#if introComplete}
-			<div class="controls" class:visible={introComplete}>
-				<button onclick={() => showControlPanel = !showControlPanel} class:active={showControlPanel}>
-					⚙️ Tune
-				</button>
-			</div>
-		{/if}
+		<DrawingPopup drawing={hoveredDrawing} x={mouseX} y={mouseY} visible={showPopup && introComplete && !highlightedDrawingId} />
 	{/if}
 
-	{#if showControlPanel && introComplete && !previewMode}
-		<div class="control-panel">
-			<div class="panel-header">
-				<h3>Visualization Settings</h3>
-				<button class="close-btn" onclick={() => showControlPanel = false}>×</button>
-			</div>
-			
-			<div class="panel-section">
-				<h4>View Mode</h4>
-				<p class="section-hint">How should drawings be arranged?</p>
-				<div class="mode-toggle">
-					<button 
-						class="mode-btn" 
-						class:active={visualizationMode === 'cluster'}
-						onclick={() => switchVisualizationMode('cluster')}
-						disabled={isComputing || isAnimatingPositions}
-					>
-						🔮 Cluster
-					</button>
-					<button 
-						class="mode-btn" 
-						class:active={visualizationMode === 'timeline'}
-						onclick={() => switchVisualizationMode('timeline')}
-						disabled={isComputing || isAnimatingPositions}
-					>
-						📅 Timeline
-					</button>
-				</div>
-				<p class="slider-hint">
-					{#if visualizationMode === 'cluster'}
-						Similar drawings grouped together
-					{:else}
-						X = time created, Y = similarity
-					{/if}
-				</p>
-			</div>
-			
-			<div class="panel-section">
-				<h4>Group by</h4>
-				<p class="section-hint">What matters most when grouping?</p>
-				
-				<label class="slider-row">
-					<span class="label-text">🎨 Color</span>
-					<input type="range" min="0" max="2" step="0.1" bind:value={weightColor} />
-					<span class="value">{weightColor.toFixed(1)}</span>
-				</label>
-				<p class="slider-hint">Similar colors used</p>
-				
-				<label class="slider-row">
-					<span class="label-text">🔷 Shape</span>
-					<input type="range" min="0" max="2" step="0.1" bind:value={weightShape} />
-					<span class="value">{weightShape.toFixed(1)}</span>
-				</label>
-				<p class="slider-hint">Similar forms & silhouettes</p>
-				
-				<label class="slider-row">
-					<span class="label-text">✨ Style</span>
-					<input type="range" min="0" max="2" step="0.1" bind:value={weightStyle} />
-					<span class="value">{weightStyle.toFixed(1)}</span>
-				</label>
-				<p class="slider-hint">Similar patterns & techniques</p>
-			</div>
-			
-			<details class="advanced-section">
-				<summary>Advanced</summary>
-				<div class="panel-section">
-					<label class="slider-row">
-						<span class="label-text">Neighbors</span>
-						<input type="range" min="2" max="50" step="1" bind:value={paramNeighbors} />
-						<span class="value">{paramNeighbors}</span>
-					</label>
-					
-					<label class="slider-row">
-						<span class="label-text">Spread</span>
-						<input type="range" min="0.01" max="1" step="0.01" bind:value={paramMinDist} />
-						<span class="value">{paramMinDist.toFixed(2)}</span>
-					</label>
-					
-					<label class="slider-row">
-						<span class="label-text">Quality</span>
-						<input type="range" min="50" max="500" step="10" bind:value={paramEpochs} />
-						<span class="value">{paramEpochs}</span>
-					</label>
-				</div>
-			</details>
-			
-			<button 
-				class="recluster-btn" 
-				onclick={handleRecluster}
-				disabled={isComputing || isAnimatingPositions || drawings.length === 0}
-			>
-				{#if isComputing}
-					Computing...
-				{:else if isAnimatingPositions}
-					Animating...
-				{:else}
-					Re-cluster
-				{/if}
-			</button>
-		</div>
-	{/if}
 
 	{#if drawings.length === 0 && !previewMode}
 		<div class="empty-state">
@@ -2163,6 +2349,10 @@
 		cursor: grabbing;
 	}
 
+	canvas.hovering-drawing {
+		cursor: pointer;
+	}
+
 	canvas.preview-mode {
 		cursor: default;
 		pointer-events: none;
@@ -2171,7 +2361,7 @@
 	.loading-overlay {
 		position: absolute;
 		inset: 0;
-		background: rgba(255, 255, 255, 0.95);
+		background: #fff;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -2180,21 +2370,20 @@
 
 	.loading-content {
 		text-align: center;
-		color: #333;
+		color: #000;
 	}
 
 	.loading-title {
-		margin: 0 0 16px 0;
-		font-size: 1rem;
-		font-weight: 600;
+		margin: 0 0 8px 0;
+		font-size: 0.75rem;
+		font-weight: 500;
 		color: #000;
 	}
 
 	.progress-bar {
-		width: 280px;
-		height: 12px;
-		background: #e0e0e0;
-		border-radius: 6px;
+		width: 200px;
+		height: 2px;
+		background: #ccc;
 		overflow: hidden;
 	}
 
@@ -2205,417 +2394,13 @@
 	}
 
 	.progress-text {
-		margin: 12px 0 0 0;
-		font-size: 0.9rem;
-		font-weight: 500;
-		color: #666;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.controls {
-		position: absolute;
-		bottom: 16px;
-		right: 16px;
-		display: flex;
-		gap: 12px;
-		animation: fadeInUp 0.4s ease-out;
-	}
-
-	@keyframes fadeInUp {
-		from {
-			opacity: 0;
-			transform: translateY(10px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
-	.controls button {
-		background: rgba(255, 255, 255, 0.95);
-		border: 1px solid #e0e0e0;
-		color: #000;
-		padding: 10px 16px;
-		border-radius: 8px;
-		cursor: pointer;
-		font-size: 0.85rem;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-		transition: all 0.15s ease;
-		min-height: 44px; /* Touch target size */
-	}
-
-	.controls button:hover {
-		background: #f0f0f0;
-		border-color: #999;
-	}
-
-	.controls button.active {
-		background: #000;
-		color: #fff;
-		border-color: #000;
-	}
-
-	/* Mobile optimizations for controls */
-	@media (max-width: 768px) {
-		.controls {
-			bottom: 1.25rem;
-			right: 1rem;
-			gap: 10px;
-		}
-
-		.controls button {
-			padding: 12px 16px;
-			font-size: 0.9rem;
-			min-height: 48px;
-			border-radius: 10px;
-		}
-	}
-
-	/* Control Panel */
-	.control-panel {
-		position: absolute;
-		top: 60px;
-		right: 16px;
-		width: 280px;
-		background: rgba(255, 255, 255, 0.98);
-		border: 1px solid #e0e0e0;
-		border-radius: 12px;
-		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
-		z-index: 50;
-		max-height: calc(100vh - 140px);
-		max-height: calc(100dvh - 140px);
-		overflow-y: auto;
-	}
-
-	/* Smaller laptop screens */
-	@media (max-height: 800px) {
-		.control-panel {
-			top: 50px;
-			width: 240px;
-			max-height: calc(100vh - 120px);
-			max-height: calc(100dvh - 120px);
-		}
-
-		.panel-header {
-			padding: 10px 12px;
-		}
-
-		.panel-section {
-			padding: 10px 12px;
-		}
-
-		.section-hint {
-			margin-bottom: 8px;
-		}
-
-		.slider-hint {
-			margin: -4px 0 8px 0;
-			font-size: 0.65rem;
-		}
-
-		.label-text {
-			flex: 0 0 65px;
-			font-size: 0.75rem;
-		}
-
-		.recluster-btn {
-			margin: 10px 12px 12px;
-			padding: 8px 12px;
-		}
-	}
-
-	/* Very small laptop screens */
-	@media (max-height: 700px) {
-		.control-panel {
-			top: auto;
-			bottom: 70px;
-			right: 12px;
-			width: 220px;
-			max-height: calc(100vh - 140px);
-			max-height: calc(100dvh - 140px);
-		}
-
-		.panel-header {
-			padding: 8px 10px;
-		}
-
-		.panel-header h3 {
-			font-size: 0.8rem;
-		}
-
-		.panel-section {
-			padding: 8px 10px;
-		}
-
-		.panel-section h4 {
-			margin-bottom: 2px;
-			font-size: 0.7rem;
-		}
-
-		.section-hint {
-			margin-bottom: 6px;
-			font-size: 0.65rem;
-		}
-
-		.slider-row {
-			margin-bottom: 4px;
-			gap: 6px;
-		}
-
-		.label-text {
-			flex: 0 0 55px;
-			font-size: 0.7rem;
-		}
-
-		.slider-hint {
-			margin: -2px 0 6px 0;
-			font-size: 0.6rem;
-		}
-
-		.slider-row .value {
-			flex: 0 0 28px;
-			font-size: 0.7rem;
-		}
-
-		.recluster-btn {
-			margin: 8px 10px 10px;
-			padding: 6px 10px;
-			font-size: 0.8rem;
-		}
-
-		.advanced-section summary {
-			padding: 8px 10px;
-			font-size: 0.7rem;
-		}
-	}
-
-	/* Mobile control panel */
-	@media (max-width: 768px) {
-		.control-panel {
-			top: auto;
-			bottom: 80px;
-			right: 12px;
-			left: 12px;
-			width: auto;
-			max-height: 60vh;
-			max-height: 60dvh;
-			border-radius: 16px;
-		}
-	}
-
-	.panel-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 12px 16px;
-		border-bottom: 1px solid #eee;
-		background: #fafafa;
-	}
-
-	.panel-header h3 {
-		margin: 0;
-		font-size: 0.9rem;
-		font-weight: 600;
-		color: #000;
-	}
-
-	.close-btn {
-		background: none;
-		border: none;
-		font-size: 1.4rem;
-		color: #666;
-		cursor: pointer;
-		padding: 0;
-		line-height: 1;
-		transition: color 0.15s;
-	}
-
-	.close-btn:hover {
-		color: #000;
-	}
-
-	.panel-section {
-		padding: 12px 16px;
-		border-bottom: 1px solid #eee;
-	}
-
-	.panel-section:last-of-type {
-		border-bottom: none;
-	}
-
-	.panel-section h4 {
-		margin: 0 0 4px 0;
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: #666;
-	}
-
-	.section-hint {
-		margin: 0 0 12px 0;
-		font-size: 0.75rem;
-		color: #999;
-	}
-
-	.mode-toggle {
-		display: flex;
-		gap: 8px;
-		margin-bottom: 8px;
-	}
-
-	.mode-btn {
-		flex: 1;
-		padding: 8px 12px;
-		border: 1px solid #e0e0e0;
-		border-radius: 8px;
-		background: #fff;
-		font-size: 0.8rem;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		color: #666;
-	}
-
-	.mode-btn:hover:not(:disabled) {
-		border-color: #999;
-		color: #333;
-	}
-
-	.mode-btn.active {
-		background: #000;
-		border-color: #000;
-		color: #fff;
-	}
-
-	.mode-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.slider-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-bottom: 8px;
-		cursor: pointer;
-	}
-
-	.slider-row:last-child {
-		margin-bottom: 0;
-	}
-
-	.label-text {
-		flex: 0 0 70px;
-		font-size: 0.8rem;
-		color: #333;
-	}
-
-	.slider-row input[type="range"] {
-		flex: 1;
-		min-width: 0;
-		height: 4px;
-		-webkit-appearance: none;
-		appearance: none;
-		background: #e0e0e0;
-		border-radius: 2px;
-		outline: none;
-	}
-
-	.slider-row input[type="range"]::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 14px;
-		height: 14px;
-		background: #000;
-		border-radius: 50%;
-		cursor: pointer;
-		transition: transform 0.1s;
-	}
-
-	.slider-row input[type="range"]::-webkit-slider-thumb:hover {
-		transform: scale(1.2);
-	}
-
-	.slider-row input[type="range"]::-moz-range-thumb {
-		width: 14px;
-		height: 14px;
-		background: #000;
-		border-radius: 50%;
-		cursor: pointer;
-		border: none;
-	}
-
-	.slider-row .value {
-		flex: 0 0 32px;
-		font-size: 0.75rem;
-		color: #666;
-		text-align: right;
-		font-variant-numeric: tabular-nums;
-	}
-
-	.slider-hint {
-		margin: -4px 0 12px 0;
+		margin: 6px 0 0 0;
 		font-size: 0.7rem;
-		color: #999;
-		padding-left: 2px;
-	}
-
-	.slider-hint:last-of-type {
-		margin-bottom: 0;
-	}
-
-	/* Advanced section */
-	.advanced-section {
-		border-top: 1px solid #eee;
-	}
-
-	.advanced-section summary {
-		padding: 10px 16px;
-		font-size: 0.75rem;
-		font-weight: 500;
-		color: #666;
-		cursor: pointer;
-		user-select: none;
-		transition: color 0.15s;
-	}
-
-	.advanced-section summary:hover {
-		color: #000;
-	}
-
-	.advanced-section[open] summary {
-		border-bottom: 1px solid #eee;
-	}
-
-	.advanced-section .panel-section {
-		border-bottom: none;
-	}
-
-	.recluster-btn {
-		display: block;
-		width: calc(100% - 32px);
-		margin: 12px 16px 16px;
-		padding: 10px 16px;
-		background: #000;
+		font-weight: 400;
 		color: #fff;
-		border: none;
-		border-radius: 8px;
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: all 0.15s;
+		font-variant-numeric: tabular-nums;
 	}
 
-	.recluster-btn:hover:not(:disabled) {
-		background: #333;
-		transform: translateY(-1px);
-	}
-
-	.recluster-btn:disabled {
-		background: #ccc;
-		cursor: not-allowed;
-	}
 
 	.empty-state {
 		position: absolute;
@@ -2624,19 +2409,19 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		color: #666;
+		color: #fff;
 		pointer-events: none;
 	}
 
 	.empty-state p {
 		margin: 0;
-		font-size: 1.2rem;
+		font-size: 0.75rem;
 	}
 
 	.empty-state .hint {
-		font-size: 0.9rem;
-		margin-top: 8px;
-		color: #999;
+		font-size: 0.7rem;
+		margin-top: 4px;
+		color: #fff;
 	}
 </style>
 

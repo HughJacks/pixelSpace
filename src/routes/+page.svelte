@@ -1,57 +1,170 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
 	import GalleryCanvas from '$lib/components/GalleryCanvas.svelte';
-	import { getAllDrawings, subscribeToDrawings } from '$lib/supabase';
+	import { getAllDrawings, subscribeToDrawings, createDrawing } from '$lib/supabase';
 	import type { Drawing } from '$lib/types';
-	import { PALETTE, GRID_SIZE, COLOR_WHITE, colorToHex } from '$lib/palette';
+	import { PALETTE, GRID_SIZE, COLOR_WHITE, colorToHex, getDefaultPixels } from '$lib/palette';
 
 	let username = $state('');
 	let showUsernameModal = $state(false);
 	let usernameInput = $state('');
 	let drawings: Drawing[] = $state([]);
 	let isLoading = $state(true);
+	let showCreate = $state(false);
+	let pendingCreate = $state(false); // Track if user wants to create after setting username
 
-	// Sidebar state
-	let sidebarOpen = $state(false);
+	// Inline create panel state
+	let createPixels: number[] = $state(getDefaultPixels());
+	let createName = $state('');
+	let createSelectedColor = $state(0);
+	let isCreating = $state(false);
+	let createError = $state('');
+	let createGridContainer: HTMLDivElement;
+	let isDrawingOnCanvas = $state(false);
+	let lastPixelX = -1;
+	let lastPixelY = -1;
+
+	// Saved preview state: keeps the drawing visible at full opacity after save
+	// until the real drawing arrives via subscription
+	let savedPreviewPixels: number[] = $state([]);
+	let savedPreviewActive = $state(false);
+
+	// Shared view state between gallery and create mode
+	let viewScale = $state(2.5);
+	let viewOffsetX = $state(0);
+	let viewOffsetY = $state(0);
+
+	function handleViewChange(scale: number, offsetX: number, offsetY: number) {
+		viewScale = scale;
+		viewOffsetX = offsetX;
+		viewOffsetY = offsetY;
+	}
+
+	// Shared positions (computed once by main canvas, reused by preview)
+	let sharedPositions: Map<string, { x: number; y: number }> = $state(new Map());
+
+	function handlePositionsComputed(positions: Map<string, { x: number; y: number }>) {
+		sharedPositions = positions;
+	}
+	
+	// Track preview position for placing saved drawings
+	let currentPreviewPosition: { x: number; y: number } | null = $state(null);
+	let pendingNewDrawingPosition: { x: number; y: number } | null = $state(null);
+	
+	function handlePreviewPositionChange(position: { x: number; y: number } | null) {
+		currentPreviewPosition = position;
+	}
+
+	// Recent mode state
+	let recentMode = $state(false);
+	let recentIndex = $state(0); // Current index in sorted drawings (0 = most recent)
+	let showTunePanel = $state(false);
 	let centerOnDrawingFn: ((drawingId: string) => void) | null = $state(null);
+	
+	// Clustering UI state (bound to gallery via props)
+	let clusterWeightColor = $state(true);
+	let clusterWeightShape = $state(true);
+	let clusterWeightStyle = $state(true);
+	let clusterNeighbors = $state(15);
+	let clusterSpread = $state(0.1);
+	let clusterQuality = $state(150);
+	let clusterMode = $state<'cluster' | 'timeline'>('cluster');
+	let isComputing = $state(false);
+	let isAnimating = $state(false);
+	let reclusterFn: (() => void) | null = $state(null);
+	
+	// Radial dial dragging state
+	let activeDial: 'neighbors' | 'spread' | 'quality' | null = $state(null);
+	let dialStartY = 0;
+	let dialStartValue = 0;
+	
+	function handleClusterStateChange(computing: boolean, animating: boolean) {
+		isComputing = computing;
+		isAnimating = animating;
+	}
+	
+	function handleReclusterReady(fn: () => void) {
+		reclusterFn = fn;
+	}
+	
+	function handleRecluster() {
+		reclusterFn?.();
+	}
+	
+	function toggleWeight(weight: 'color' | 'shape' | 'style') {
+		if (weight === 'color') {
+			clusterWeightColor = !clusterWeightColor;
+		} else if (weight === 'shape') {
+			clusterWeightShape = !clusterWeightShape;
+		} else {
+			clusterWeightStyle = !clusterWeightStyle;
+		}
+	}
+	
+	function switchMode(mode: 'cluster' | 'timeline') {
+		clusterMode = mode;
+	}
+	
+	function handleDialPointerDown(dial: 'neighbors' | 'spread' | 'quality', event: PointerEvent) {
+		activeDial = dial;
+		dialStartY = event.clientY;
+		if (dial === 'neighbors') dialStartValue = clusterNeighbors;
+		else if (dial === 'spread') dialStartValue = clusterSpread;
+		else dialStartValue = clusterQuality;
+		
+		(event.target as HTMLElement).setPointerCapture(event.pointerId);
+	}
+	
+	function handleDialPointerMove(event: PointerEvent) {
+		if (!activeDial) return;
+		
+		const deltaY = dialStartY - event.clientY;
+		const sensitivity = 0.5;
+		
+		if (activeDial === 'neighbors') {
+			clusterNeighbors = Math.round(Math.max(2, Math.min(50, dialStartValue + deltaY * sensitivity)));
+		} else if (activeDial === 'spread') {
+			clusterSpread = Math.max(0.01, Math.min(1, dialStartValue + deltaY * 0.005));
+		} else {
+			clusterQuality = Math.round(Math.max(50, Math.min(500, dialStartValue + deltaY * 2)));
+		}
+	}
+	
+	function handleDialPointerUp(event: PointerEvent) {
+		if (activeDial) {
+			(event.target as HTMLElement).releasePointerCapture(event.pointerId);
+			activeDial = null;
+		}
+	}
+	
+	// Calculate dial rotation based on value
+	function getDialRotation(dial: 'neighbors' | 'spread' | 'quality'): number {
+		if (dial === 'neighbors') {
+			return ((clusterNeighbors - 2) / 48) * 270 - 135; // 2-50 range, -135 to 135 degrees
+		} else if (dial === 'spread') {
+			return ((clusterSpread - 0.01) / 0.99) * 270 - 135; // 0.01-1 range
+		} else {
+			return ((clusterQuality - 50) / 450) * 270 - 135; // 50-500 range
+		}
+	}
 
-	// Recent drawings sorted by creation date (newest first)
-	let recentDrawings = $derived.by(() => {
-		return [...drawings].sort((a, b) => b.created.localeCompare(a.created)).slice(0, 50);
+	// All drawings sorted by creation date (newest first)
+	let sortedDrawings = $derived.by(() => {
+		return [...drawings].sort((a, b) => b.created.localeCompare(a.created));
 	});
+
+	// Currently highlighted drawing in recent mode
+	let highlightedDrawing = $derived.by(() => {
+		if (!recentMode || sortedDrawings.length === 0) return null;
+		return sortedDrawings[recentIndex] ?? null;
+	});
+
+	// Navigation state
+	let canGoNewer = $derived(recentMode && recentIndex > 0);
+	let canGoOlder = $derived(recentMode && recentIndex < sortedDrawings.length - 1);
 
 	// Count unique users
 	let uniqueUserCount = $derived(new Set(drawings.map(d => d.creator)).size);
-
-	// Generate SVG data URL for a drawing thumbnail
-	function getDrawingSvgUrl(pixels: number[]): string {
-		let rects = '';
-		for (let y = 0; y < GRID_SIZE; y++) {
-			let x = 0;
-			while (x < GRID_SIZE) {
-				const pixelValue = pixels[y * GRID_SIZE + x] ?? COLOR_WHITE;
-				let width = 1;
-				while (x + width < GRID_SIZE && pixels[y * GRID_SIZE + x + width] === pixelValue) {
-					width++;
-				}
-				const isWhite = pixelValue === COLOR_WHITE || pixelValue === 255;
-				if (!isWhite) {
-					let hexColor: string;
-					if (pixelValue > 7) {
-						hexColor = pixelValue <= 127 ? '#000000' : '#ffffff';
-					} else {
-						const color = PALETTE[pixelValue] ?? PALETTE[COLOR_WHITE];
-						hexColor = colorToHex(color);
-					}
-					rects += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="${hexColor}"/>`;
-				}
-				x += width;
-			}
-		}
-		const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_SIZE} ${GRID_SIZE}" shape-rendering="crispEdges"><rect width="${GRID_SIZE}" height="${GRID_SIZE}" fill="#fff"/>${rects}</svg>`;
-		return 'data:image/svg+xml;base64,' + btoa(svg);
-	}
 
 	// Format relative time
 	function formatRelativeTime(dateString: string): string {
@@ -69,21 +182,76 @@
 		return date.toLocaleDateString();
 	}
 
-	function handleDrawingClick(drawingId: string) {
-		if (centerOnDrawingFn) {
-			centerOnDrawingFn(drawingId);
-			// Close sidebar on mobile after clicking
-			if (window.innerWidth < 768) {
-				sidebarOpen = false;
-			}
-		}
-	}
-
 	function handleCenterOnDrawing(fn: (drawingId: string) => void) {
 		centerOnDrawingFn = fn;
 	}
 
-	onMount(async () => {
+	// Enter recent mode at a specific drawing (when clicking an image)
+	function enterRecentModeAtDrawing(drawingId: string) {
+		// Find the index of this drawing in sortedDrawings
+		const index = sortedDrawings.findIndex(d => d.id === drawingId);
+		if (index === -1) return;
+		
+		recentMode = true;
+		recentIndex = index;
+		// Zoom to the drawing
+		if (centerOnDrawingFn) {
+			centerOnDrawingFn(drawingId);
+		}
+	}
+
+	// Enter recent mode and zoom to most recent drawing
+	function enterRecentMode() {
+		if (sortedDrawings.length === 0) return;
+		recentMode = true;
+		recentIndex = 0;
+		zoomToCurrentRecent();
+	}
+
+	// Exit recent mode
+	function exitRecentMode() {
+		recentMode = false;
+	}
+
+	// Zoom to the currently selected recent drawing
+	function zoomToCurrentRecent() {
+		const drawing = sortedDrawings[recentIndex];
+		if (drawing && centerOnDrawingFn) {
+			centerOnDrawingFn(drawing.id);
+		}
+	}
+
+	// Navigate to newer drawing (left arrow)
+	function goNewer() {
+		if (!canGoNewer) return;
+		recentIndex--;
+		zoomToCurrentRecent();
+	}
+
+	// Navigate to older drawing (right arrow)
+	function goOlder() {
+		if (!canGoOlder) return;
+		recentIndex++;
+		zoomToCurrentRecent();
+	}
+
+	// Handle keyboard navigation in recent mode
+	function handleKeydown(event: KeyboardEvent) {
+		if (recentMode && !showCreate) {
+			if (event.key === 'ArrowLeft') {
+				event.preventDefault();
+				goOlder();
+			} else if (event.key === 'ArrowRight') {
+				event.preventDefault();
+				goNewer();
+			} else if (event.key === 'Escape') {
+				event.preventDefault();
+				exitRecentMode();
+			}
+		}
+	}
+
+	onMount(() => {
 		// Check for stored username (but don't require it)
 		const storedUsername = localStorage.getItem('pixelspace_username');
 		if (storedUsername) {
@@ -91,20 +259,34 @@
 		}
 
 		// Fetch drawings
-		try {
-			drawings = await getAllDrawings();
-		} catch (error) {
-			console.error('Failed to load drawings:', error);
-		}
-		isLoading = false;
+		getAllDrawings()
+			.then((data) => {
+				drawings = data;
+			})
+			.catch((error) => {
+				console.error('Failed to load drawings:', error);
+			})
+			.finally(() => {
+				isLoading = false;
+			});
 
 		// Subscribe to real-time updates
 		const unsubscribe = subscribeToDrawings((newDrawing) => {
 			drawings = [newDrawing, ...drawings];
+			
+			// Clear saved preview when the real drawing arrives from subscription
+			if (savedPreviewActive) {
+				savedPreviewActive = false;
+				savedPreviewPixels = [];
+			}
 		});
+
+		// Add keyboard listener
+		window.addEventListener('keydown', handleKeydown);
 
 		return () => {
 			unsubscribe();
+			window.removeEventListener('keydown', handleKeydown);
 		};
 	});
 
@@ -113,23 +295,198 @@
 			username = usernameInput.trim();
 			localStorage.setItem('pixelspace_username', username);
 			showUsernameModal = false;
+			
+			// If user was trying to create, open the create view now
+			if (pendingCreate) {
+				pendingCreate = false;
+				showCreate = true;
+			}
 		}
 	}
 
-	function handleKeydown(event: KeyboardEvent) {
+	function handleUsernameKeydown(event: KeyboardEvent) {
 		if (event.key === 'Enter') {
 			handleSetUsername();
 		}
 	}
 
 	function handleCreateNew() {
-		goto('/create');
+		// If no username is set, show the username modal first
+		if (!username) {
+			pendingCreate = true;
+			showUsernameModal = true;
+			return;
+		}
+		// Exit recent mode if active
+		recentMode = false;
+		showCreate = true;
 	}
 
 	function handleChangeUsername() {
 		usernameInput = username;
 		showUsernameModal = true;
 	}
+
+	// Create panel drawing functions
+	function getPixelFromPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+		if (!createGridContainer) return null;
+		
+		const rect = createGridContainer.getBoundingClientRect();
+		const relX = clientX - rect.left;
+		const relY = clientY - rect.top;
+		
+		const cellWidth = rect.width / GRID_SIZE;
+		const cellHeight = rect.height / GRID_SIZE;
+		
+		const x = Math.floor(relX / cellWidth);
+		const y = Math.floor(relY / cellHeight);
+		
+		if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+			return { x, y };
+		}
+		return null;
+	}
+
+	function setPixel(x: number, y: number, colorIndex: number) {
+		if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
+		const idx = y * GRID_SIZE + x;
+		if (createPixels[idx] !== colorIndex) {
+			createPixels[idx] = colorIndex;
+			createPixels = [...createPixels];
+		}
+	}
+
+	function drawAtPoint(clientX: number, clientY: number, isErasing: boolean) {
+		const pixel = getPixelFromPoint(clientX, clientY);
+		if (!pixel) return;
+		
+		if (pixel.x === lastPixelX && pixel.y === lastPixelY) return;
+		
+		lastPixelX = pixel.x;
+		lastPixelY = pixel.y;
+		
+		setPixel(pixel.x, pixel.y, isErasing ? COLOR_WHITE : createSelectedColor);
+	}
+
+	let isErasingCreate = false;
+
+	function handleCreatePointerDown(event: PointerEvent) {
+		event.preventDefault();
+		isDrawingOnCanvas = true;
+		isErasingCreate = event.button === 2;
+		lastPixelX = -1;
+		lastPixelY = -1;
+		
+		createGridContainer.setPointerCapture(event.pointerId);
+		drawAtPoint(event.clientX, event.clientY, isErasingCreate);
+	}
+
+	function handleCreatePointerMove(event: PointerEvent) {
+		if (!isDrawingOnCanvas) return;
+		event.preventDefault();
+		drawAtPoint(event.clientX, event.clientY, isErasingCreate);
+	}
+
+	function handleCreatePointerUp(event: PointerEvent) {
+		if (isDrawingOnCanvas) {
+			createGridContainer.releasePointerCapture(event.pointerId);
+		}
+		isDrawingOnCanvas = false;
+		isErasingCreate = false;
+		lastPixelX = -1;
+		lastPixelY = -1;
+	}
+
+	function clearCreateCanvas() {
+		createPixels = getDefaultPixels();
+	}
+
+	function handleCreateContextMenu(event: MouseEvent) {
+		event.preventDefault();
+	}
+
+	async function handleSaveDrawing() {
+		if (!createName.trim()) {
+			createError = 'Please give your drawing a name';
+			return;
+		}
+
+		if (!username) {
+			pendingCreate = true;
+			showUsernameModal = true;
+			return;
+		}
+
+		isCreating = true;
+		createError = '';
+
+		// Store the current preview position to use when the drawing arrives
+		if (currentPreviewPosition) {
+			pendingNewDrawingPosition = { ...currentPreviewPosition };
+		}
+
+		try {
+			const result = await createDrawing({
+				name: createName.trim(),
+				creator: username,
+				pixels: createPixels
+			});
+
+			if (result) {
+				// Keep the drawing visible at full opacity by storing it as saved preview
+				savedPreviewPixels = [...createPixels];
+				savedPreviewActive = true;
+				
+				// Close create panel and reset for next time
+				showCreate = false;
+				createPixels = getDefaultPixels();
+				createName = '';
+				
+				// Clear pending position after a short delay (give time for the drawing to be placed)
+				setTimeout(() => {
+					pendingNewDrawingPosition = null;
+				}, 1000);
+				
+				// Safety fallback: clear saved preview after 5s if subscription hasn't fired
+				setTimeout(() => {
+					if (savedPreviewActive) {
+						savedPreviewActive = false;
+						savedPreviewPixels = [];
+					}
+				}, 5000);
+			} else {
+				createError = 'Failed to save. Please try again.';
+				pendingNewDrawingPosition = null;
+			}
+		} catch (err) {
+			console.error('Save error:', err);
+			createError = 'Failed to save. Please try again.';
+			pendingNewDrawingPosition = null;
+		} finally {
+			isCreating = false;
+		}
+	}
+
+	function cancelCreate() {
+		showCreate = false;
+		createPixels = getDefaultPixels();
+		createName = '';
+		createError = '';
+	}
+
+	// Convert flat array to 2D grid for rendering
+	let createGrid = $derived.by(() => {
+		const result: number[][] = [];
+		for (let y = 0; y < GRID_SIZE; y++) {
+			const row: number[] = [];
+			for (let x = 0; x < GRID_SIZE; x++) {
+				const idx = y * GRID_SIZE + x;
+				row.push(createPixels[idx] ?? COLOR_WHITE);
+			}
+			result.push(row);
+		}
+		return result;
+	});
 </script>
 
 <div class="page">
@@ -141,81 +498,362 @@
 			</div>
 		</div>
 	{:else}
-		<GalleryCanvas {drawings} onCenterOnDrawing={handleCenterOnDrawing} />
+		<GalleryCanvas 
+			{drawings} 
+			onCenterOnDrawing={handleCenterOnDrawing}
+			onDrawingClick={enterRecentModeAtDrawing}
+			previewPixels={showCreate ? createPixels : savedPreviewPixels}
+			previewSaved={savedPreviewActive}
+			onPreviewPositionChange={handlePreviewPositionChange}
+			{pendingNewDrawingPosition}
+			{viewScale}
+			{viewOffsetX}
+			{viewOffsetY}
+			onViewChange={handleViewChange}
+			onPositionsComputed={handlePositionsComputed}
+			bind:showControlPanel={showTunePanel}
+			highlightedDrawingId={highlightedDrawing?.id ?? null}
+			bind:clusterWeightColor
+			bind:clusterWeightShape
+			bind:clusterWeightStyle
+			bind:clusterNeighbors
+			bind:clusterSpread
+			bind:clusterQuality
+			bind:clusterMode
+			onClusterStateChange={handleClusterStateChange}
+			onReclusterReady={handleReclusterReady}
+		/>
 	{/if}
 
-	<!-- Sidebar toggle button -->
-	<button
-		class="sidebar-toggle"
-		class:open={sidebarOpen}
-		class:fade-in={!isLoading}
-		onclick={() => (sidebarOpen = !sidebarOpen)}
-		aria-label={sidebarOpen ? 'Close sidebar' : 'Open recent drawings'}
-	>
-		<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-			{#if sidebarOpen}
-				<path d="M15 5L5 15M5 5L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-			{:else}
-				<path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+	<!-- Unified bottom toolbar -->
+	<div class="toolbar" class:fade-in={!isLoading} class:recent-mode={recentMode} class:tune-mode={showTunePanel} class:create-mode={showCreate}>
+		<!-- Main mode buttons -->
+		<div class="toolbar-group main-buttons" class:active={!recentMode && !showTunePanel && !showCreate}>
+			<button
+				class="toolbar-btn"
+				onclick={enterRecentMode}
+				aria-label="Browse drawings"
+				disabled={sortedDrawings.length === 0}
+			>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+					<circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.5"/>
+					<path d="M13 13l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+			</button>
+
+			<button class="toolbar-btn primary" onclick={handleCreateNew}>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+					<path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+				</svg>
+				<span>Create</span>
+			</button>
+
+			<button
+				class="toolbar-btn"
+				class:active={showTunePanel}
+				onclick={() => (showTunePanel = !showTunePanel)}
+				aria-label="Tune visualization"
+			>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+					<circle cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.5"/>
+					<circle cx="14" cy="10" r="2" stroke="currentColor" stroke-width="1.5"/>
+					<circle cx="6" cy="15" r="2" stroke="currentColor" stroke-width="1.5"/>
+					<path d="M8 5h9M3 5h1M16 10h1M3 10h9M8 15h9M3 15h1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+				</button>
+			</div>
+
+		<!-- Create mode panel -->
+		<div class="toolbar-group create-panel" class:active={showCreate}>
+			<!-- Pixel grid -->
+			<div class="create-grid-wrapper">
+				<div
+					class="create-grid"
+					bind:this={createGridContainer}
+					onpointerdown={handleCreatePointerDown}
+					onpointermove={handleCreatePointerMove}
+					onpointerup={handleCreatePointerUp}
+					onpointercancel={handleCreatePointerUp}
+					onpointerleave={handleCreatePointerUp}
+					oncontextmenu={handleCreateContextMenu}
+				>
+					{#each createGrid as row, y}
+						{#each row as colorIndex, x}
+							<div
+								class="create-pixel"
+								style="background-color: {colorToHex(PALETTE[colorIndex] ?? PALETTE[COLOR_WHITE])}"
+							></div>
+						{/each}
+					{/each}
+				</div>
+			</div>
+
+			<!-- Color palette row -->
+			<div class="create-controls-row">
+				<div class="create-palette">
+					{#each PALETTE as color, index}
+						<button
+							class="create-color-swatch"
+							class:active={createSelectedColor === index}
+							style="background-color: {colorToHex(color)}"
+							onclick={() => (createSelectedColor = index)}
+							title={color.name}
+						></button>
+					{/each}
+				</div>
+				<button class="create-clear-btn" onclick={clearCreateCanvas} title="Clear">
+					<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+						<path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+				</button>
+			</div>
+
+			<!-- Name input and buttons row -->
+			<div class="create-bottom-row">
+				<input
+					type="text"
+					class="create-name-input"
+					placeholder="Name..."
+					bind:value={createName}
+					maxlength={50}
+					class:has-error={createError && !createName.trim()}
+				/>
+				<button class="toolbar-btn" onclick={cancelCreate} aria-label="Cancel">
+					<svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+						<path d="M15 5L5 15M5 5L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+					</svg>
+				</button>
+				<button class="toolbar-btn primary" onclick={handleSaveDrawing} disabled={isCreating}>
+					<svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+						<path d="M5 10l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</button>
+			</div>
+
+			{#if createError}
+				<p class="create-error">{createError}</p>
 			{/if}
+		</div>
+
+			<!-- Clustering mode buttons -->
+			<div class="toolbar-group tune-buttons" class:active={showTunePanel && !recentMode}>
+			<!-- Feature toggles -->
+			<div class="toggle-group">
+				<button 
+					class="toggle-btn"
+					class:active={clusterWeightColor}
+					onclick={() => toggleWeight('color')}
+					title="Color similarity"
+				>C</button>
+				<button 
+					class="toggle-btn"
+					class:active={clusterWeightShape}
+					onclick={() => toggleWeight('shape')}
+					title="Shape similarity"
+				>S</button>
+				<button 
+					class="toggle-btn"
+					class:active={clusterWeightStyle}
+					onclick={() => toggleWeight('style')}
+					title="Style similarity"
+				>T</button>
+			</div>
+			
+			<div class="toolbar-divider"></div>
+			
+			<!-- Radial dials -->
+			<div class="dial-group">
+				<div 
+					class="radial-dial"
+					class:dragging={activeDial === 'neighbors'}
+					role="slider"
+					aria-label="Neighbors"
+					aria-valuenow={clusterNeighbors}
+					aria-valuemin={2}
+					aria-valuemax={50}
+					tabindex="0"
+					onpointerdown={(e) => handleDialPointerDown('neighbors', e)}
+					onpointermove={handleDialPointerMove}
+					onpointerup={handleDialPointerUp}
+					title="Neighbors: {clusterNeighbors}"
+				>
+					<div class="dial-knob" style="transform: rotate({getDialRotation('neighbors')}deg)">
+						<div class="dial-indicator"></div>
+					</div>
+					<span class="dial-label">N</span>
+				</div>
+				<div 
+					class="radial-dial"
+					class:dragging={activeDial === 'spread'}
+					role="slider"
+					aria-label="Spread"
+					aria-valuenow={clusterSpread}
+					aria-valuemin={0.01}
+					aria-valuemax={1}
+					tabindex="0"
+					onpointerdown={(e) => handleDialPointerDown('spread', e)}
+					onpointermove={handleDialPointerMove}
+					onpointerup={handleDialPointerUp}
+					title="Spread: {clusterSpread.toFixed(2)}"
+				>
+					<div class="dial-knob" style="transform: rotate({getDialRotation('spread')}deg)">
+						<div class="dial-indicator"></div>
+					</div>
+					<span class="dial-label">S</span>
+				</div>
+				<div 
+					class="radial-dial"
+					class:dragging={activeDial === 'quality'}
+					role="slider"
+					aria-label="Quality"
+					aria-valuenow={clusterQuality}
+					aria-valuemin={50}
+					aria-valuemax={500}
+					tabindex="0"
+					onpointerdown={(e) => handleDialPointerDown('quality', e)}
+					onpointermove={handleDialPointerMove}
+					onpointerup={handleDialPointerUp}
+					title="Quality: {clusterQuality}"
+				>
+					<div class="dial-knob" style="transform: rotate({getDialRotation('quality')}deg)">
+						<div class="dial-indicator"></div>
+					</div>
+					<span class="dial-label">Q</span>
+				</div>
+			</div>
+			
+			<div class="toolbar-divider"></div>
+			
+			<!-- Mode toggle -->
+			<div class="mode-toggle-group">
+				<button 
+					class="mode-btn"
+					class:active={clusterMode === 'cluster'}
+					onclick={() => switchMode('cluster')}
+					disabled={isComputing || isAnimating}
+					title="Cluster view"
+				>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<circle cx="5" cy="5" r="2" fill="currentColor"/>
+						<circle cx="11" cy="5" r="2" fill="currentColor"/>
+						<circle cx="8" cy="11" r="2" fill="currentColor"/>
+					</svg>
+				</button>
+				<button 
+					class="mode-btn"
+					class:active={clusterMode === 'timeline'}
+					onclick={() => switchMode('timeline')}
+					disabled={isComputing || isAnimating}
+					title="Timeline view"
+				>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<circle cx="4" cy="8" r="1.5" fill="currentColor"/>
+						<circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+						<circle cx="12" cy="8" r="1.5" fill="currentColor"/>
+					</svg>
+				</button>
+			</div>
+			
+			<div class="toolbar-divider"></div>
+			
+			<!-- Recalc button -->
+			<button 
+				class="toolbar-btn recalc-btn"
+				onclick={handleRecluster}
+				disabled={isComputing || isAnimating || drawings.length === 0}
+				title="Recalculate"
+			>
+				{#if isComputing || isAnimating}
+					<svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="spinning">
+						<path d="M9 2v3M9 13v3M2 9h3M13 9h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+				{:else}
+					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+						<path d="M14.5 9A5.5 5.5 0 1 1 9 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<path d="M9 1v5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				{/if}
+			</button>
+			
+			<!-- Close button -->
+			<button 
+				class="toolbar-btn"
+				onclick={() => (showTunePanel = false)}
+				aria-label="Close clustering panel"
+			>
+				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+					<path d="M13 5L5 13M5 5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+			</button>
+		</div>
+
+		<!-- Recent mode buttons -->
+		<div class="toolbar-group recent-buttons" class:active={recentMode}>
+			<button 
+				class="toolbar-btn highlight"
+				onclick={() => {}}
+				aria-label="Recent drawings"
+				title="Recent"
+			>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+					<circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+					<path d="M10 6v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+
+			<button 
+				class="toolbar-btn"
+				onclick={exitRecentMode}
+				aria-label="Exit browse mode"
+				title="Exit"
+			>
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+					<path d="M15 5L5 15M5 5L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+				</svg>
+			</button>
+		</div>
+	</div>
+
+	<!-- Recent mode navigation arrows -->
+	<button 
+		class="nav-arrow nav-arrow-left"
+		class:visible={recentMode && !showCreate && canGoOlder}
+		onclick={goOlder}
+		aria-label="View older drawing"
+	>
+		<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+			<path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 		</svg>
 	</button>
 
-	<!-- Collapsible sidebar -->
-	<aside class="sidebar" class:open={sidebarOpen}>
-		<div class="sidebar-header">
-			<h2>Recent Drawings</h2>
-			<span class="count">{recentDrawings.length}</span>
-		</div>
-		<div class="sidebar-content">
-			{#each recentDrawings as drawing (drawing.id)}
-				<button class="drawing-item" onclick={() => handleDrawingClick(drawing.id)}>
-					<img
-						src={getDrawingSvgUrl(drawing.pixels)}
-						alt={drawing.name}
-						class="drawing-thumbnail"
-					/>
-					<div class="drawing-info">
-						<span class="drawing-name">{drawing.name}</span>
-						<span class="drawing-meta">
-							<span class="creator">by {drawing.creator}</span>
-							<span class="time">{formatRelativeTime(drawing.created)}</span>
-						</span>
-					</div>
-				</button>
-			{/each}
-			{#if recentDrawings.length === 0}
-				<div class="no-drawings">
-					<p>No drawings yet</p>
-				</div>
-			{/if}
-		</div>
-	</aside>
+	<button 
+		class="nav-arrow nav-arrow-right"
+		class:visible={recentMode && !showCreate && canGoNewer}
+		onclick={goNewer}
+		aria-label="View newer drawing"
+	>
+		<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+			<path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+		</svg>
+	</button>
 
-	<!-- Sidebar backdrop for mobile -->
-	{#if sidebarOpen}
-		<button class="sidebar-backdrop" onclick={() => (sidebarOpen = false)} aria-label="Close sidebar"></button>
-	{/if}
-
-	<div class="overlay-controls" class:fade-in={!isLoading}>
-		<button class="btn-create" onclick={handleCreateNew}>
-			<span>+</span> Create
-		</button>
-	</div>
-
-	<div class="drawing-count" class:fade-in={!isLoading}>
-		<span class="count-drawings">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
-		<span class="count-separator"> from </span>
-		<span class="count-users">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
-	</div>
-
-	<div class="top-right-controls" class:fade-in={!isLoading}>
-		{#if username}
-			<button class="user-badge" onclick={handleChangeUsername}>
-				<span class="avatar">{username[0].toUpperCase()}</span>
-			</button>
+	<div class="stats-bar" class:fade-in={!isLoading} class:hidden={showCreate} class:recent-info={recentMode}>
+		{#if recentMode && highlightedDrawing}
+			<span class="drawing-title">{highlightedDrawing.name}</span>
+			<span class="stat-dot"></span>
+			<span class="stat">by {highlightedDrawing.creator}</span>
+			<span class="stat-dot"></span>
+			<span class="stat">{formatRelativeTime(highlightedDrawing.created)}</span>
+			<span class="stat-dot"></span>
+			<span class="stat counter">{sortedDrawings.length - recentIndex} / {sortedDrawings.length}</span>
+		{:else}
+			<span class="stat">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
+			<span class="stat-dot"></span>
+			<span class="stat">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
 		{/if}
 	</div>
+
 </div>
 
 {#if showUsernameModal}
@@ -227,7 +865,7 @@
 				type="text"
 				placeholder="Your username"
 				bind:value={usernameInput}
-				onkeydown={handleKeydown}
+				onkeydown={handleUsernameKeydown}
 				maxlength={20}
 			/>
 			<button class="btn-primary" onclick={handleSetUsername} disabled={!usernameInput.trim()}>
@@ -247,346 +885,537 @@
 		background: #fff;
 	}
 
-	/* Sidebar toggle button */
-	.sidebar-toggle {
+	/* Hidden state for elements when in create mode */
+	.hidden {
+		opacity: 0 !important;
+		pointer-events: none !important;
+	}
+
+	/* Unified toolbar at bottom center */
+	.toolbar {
 		position: fixed;
-		top: 1rem;
-		left: 1rem;
-		width: 42px;
-		height: 42px;
-		background: rgba(255, 255, 255, 0.95);
-		border: 1px solid #e0e0e0;
-		border-radius: 10px;
+		bottom: 1rem;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: stretch;
+		background: #000;
+		border: 1px solid #333;
+		padding: 0.25rem;
+		z-index: 200;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.2s ease;
+	}
+
+	.toolbar.fade-in {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.toolbar.fade-in.hidden {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	/* Button groups - animate width via max-width */
+	.toolbar-group {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		overflow: hidden;
+		transition: max-width 0.25s ease, opacity 0.15s ease, max-height 0.25s ease;
+	}
+
+	.toolbar-group.main-buttons {
+		max-width: 0;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.toolbar-group.main-buttons.active {
+		max-width: 200px;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.toolbar-group.recent-buttons {
+		max-width: 0;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.toolbar-group.recent-buttons.active {
+		max-width: 100px;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.toolbar-group.tune-buttons {
+		max-width: 0;
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.toolbar-group.tune-buttons.active {
+		max-width: 500px;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	/* Create panel - column layout with canvas */
+	.toolbar-group.create-panel {
+		flex-direction: column;
+		align-items: center;
+		gap: 0.25rem;
+		max-width: 0;
+		max-height: 0;
+		opacity: 0;
+		pointer-events: none;
+		padding: 0;
+	}
+
+	.toolbar-group.create-panel.active {
+		max-width: min(240px, calc(100vw - 1rem));
+		max-height: 360px;
+		opacity: 1;
+		pointer-events: auto;
+		padding: 0.25rem;
+	}
+
+	.toolbar-divider {
+		width: 1px;
+		height: 24px;
+		background: #333;
+		margin: 0 0.25rem;
+	}
+
+	/* Toggle buttons for C/S/T */
+	.toggle-group {
+		display: flex;
+		gap: 0.125rem;
+	}
+
+	.toggle-btn {
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		border: 1px solid #333;
+		color: #666;
+		font-weight: 600;
+		font-size: 0.75rem;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.toggle-btn:hover {
+		border-color: #666;
+		color: #999;
+	}
+
+	.toggle-btn.active {
+		background: #fff;
+		border-color: #fff;
+		color: #000;
+	}
+
+	/* Radial dials */
+	.dial-group {
+		display: flex;
+		gap: 0.375rem;
+		align-items: center;
+	}
+
+	.radial-dial {
+		width: 32px;
+		height: 32px;
+		position: relative;
+		cursor: ns-resize;
+		touch-action: none;
+	}
+
+	.dial-knob {
+		width: 28px;
+		height: 28px;
+		border: 2px solid #444;
+		border-radius: 50%;
+		position: absolute;
+		top: 2px;
+		left: 2px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transition: border-color 0.15s ease;
+	}
+
+	.radial-dial:hover .dial-knob,
+	.radial-dial.dragging .dial-knob {
+		border-color: #fff;
+	}
+
+	.dial-indicator {
+		width: 2px;
+		height: 8px;
+		background: #fff;
+		border-radius: 1px;
+		position: absolute;
+		top: 3px;
+	}
+
+	.dial-label {
+		position: absolute;
+		bottom: -12px;
+		left: 50%;
+		transform: translateX(-50%);
+		font-size: 0.55rem;
+		color: #666;
+		font-weight: 500;
+	}
+
+	/* Mode toggle buttons */
+	.mode-toggle-group {
+		display: flex;
+		gap: 0.125rem;
+	}
+
+	.mode-btn {
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		border: 1px solid #333;
+		color: #666;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.mode-btn:hover:not(:disabled) {
+		border-color: #666;
+		color: #999;
+	}
+
+	.mode-btn.active {
+		background: #fff;
+		border-color: #fff;
+		color: #000;
+	}
+
+	.mode-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	/* Recalc button */
+	.recalc-btn {
+		min-width: 32px;
+	}
+
+	.recalc-btn svg.spinning {
+		animation: spin 1s linear infinite;
+	}
+
+	@keyframes spin {
+		from { transform: rotate(0deg); }
+		to { transform: rotate(360deg); }
+	}
+
+	.toolbar-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.375rem;
+		padding: 0.5rem;
+		background: transparent;
+		border: none;
+		color: #fff;
+		cursor: pointer;
+		transition: background 0.15s ease;
+		min-width: 36px;
+		min-height: 36px;
+		flex-shrink: 0;
+	}
+
+	.toolbar-btn:hover {
+		background: #222;
+	}
+
+	.toolbar-btn.active {
+		background: #fff;
+		color: #000;
+	}
+
+	.toolbar-btn.highlight {
+		background: #fff;
+		color: #000;
+	}
+
+	.toolbar-btn.highlight:hover {
+		background: #ccc;
+	}
+
+	.toolbar-btn.primary {
+		background: #fff;
+		color: #000;
+		padding: 0.5rem 0.75rem;
+		font-weight: 600;
+		font-size: 0.75rem;
+	}
+
+	.toolbar-btn.primary:hover {
+		background: #ccc;
+	}
+
+	.toolbar-btn.primary span {
+		margin-left: 0.125rem;
+	}
+
+	.toolbar-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	@media (max-width: 768px) {
+		.toolbar {
+			bottom: 0.375rem;
+			left: 50%;
+			transform: translateX(-50%);
+			padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
+		}
+
+		.toolbar.create-mode {
+			/* Position create panel in bottom half so preview shows in top half */
+			bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
+			left: 50%;
+			right: auto;
+			transform: translateX(-50%);
+			justify-content: center;
+			padding: 0.125rem;
+		}
+
+		.toolbar-group {
+			gap: 0.375rem;
+		}
+		
+		/* Mobile create panel - larger grid, tighter spacing */
+		.toolbar-group.create-panel {
+			gap: 0.25rem;
+		}
+		
+		.toolbar-group.create-panel.active {
+			max-width: calc(100vw - 1rem);
+			padding: 0.25rem;
+		}
+
+		.toolbar-btn {
+			padding: 0.625rem;
+		}
+
+		.toolbar-btn.primary {
+			padding: 0.625rem 1rem;
+			font-size: 0.8rem;
+		}
+
+		.toolbar-btn.primary span {
+			display: none;
+		}
+
+		/* Mobile clustering controls */
+		.toggle-btn {
+			width: 36px;
+			height: 36px;
+			font-size: 0.8rem;
+		}
+
+		.dial-group {
+			gap: 0.375rem;
+		}
+
+		.radial-dial {
+			width: 36px;
+			height: 36px;
+		}
+
+		.dial-knob {
+			width: 30px;
+			height: 30px;
+		}
+
+		.dial-indicator {
+			height: 8px;
+		}
+
+		.dial-label {
+			font-size: 0.55rem;
+			bottom: -12px;
+		}
+
+		.mode-btn {
+			width: 36px;
+			height: 36px;
+		}
+
+		.toolbar-divider {
+			height: 28px;
+			margin: 0 0.25rem;
+		}
+	}
+
+	/* Navigation arrows for recent mode */
+	.nav-arrow {
+		position: fixed;
+		top: 50%;
+		transform: translateY(-50%);
+		width: 36px;
+		height: 36px;
+		background: #000;
+		border: 1px solid #333;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		cursor: pointer;
 		z-index: 200;
-		transition: all 0.2s ease;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-		color: #333;
-		opacity: 0;
-	}
-
-	.sidebar-toggle.fade-in {
-		animation: fadeInUp 0.4s ease-out forwards;
-		animation-delay: 0.1s;
-	}
-
-	.sidebar-toggle:hover {
-		background: #f5f5f5;
-		border-color: #ccc;
-		transform: scale(1.05);
-	}
-
-	.sidebar-toggle.open {
-		background: #000;
-		border-color: #000;
+		transition: opacity 0.2s ease, border-color 0.15s ease, background 0.15s ease;
 		color: #fff;
-	}
-
-	/* Sidebar */
-	.sidebar {
-		position: fixed;
-		top: 0;
-		left: 0;
-		width: 320px;
-		height: 100vh;
-		background: rgba(255, 255, 255, 0.98);
-		backdrop-filter: blur(20px);
-		border-right: 1px solid #e0e0e0;
-		transform: translateX(-100%);
-		transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-		z-index: 150;
-		display: flex;
-		flex-direction: column;
-		box-shadow: 4px 0 24px rgba(0, 0, 0, 0.1);
-	}
-
-	.sidebar.open {
-		transform: translateX(0);
-	}
-
-	.sidebar-header {
-		padding: 1.25rem 1.25rem 1rem;
-		padding-top: calc(1.25rem + 48px);
-		border-bottom: 1px solid #eee;
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-	}
-
-	.sidebar-header h2 {
-		margin: 0;
-		font-size: 1.1rem;
-		font-weight: 700;
-		color: #000;
-		letter-spacing: -0.02em;
-	}
-
-	.sidebar-header .count {
-		background: #f0f0f0;
-		color: #666;
-		font-size: 0.75rem;
-		font-weight: 600;
-		padding: 0.2rem 0.5rem;
-		border-radius: 20px;
-	}
-
-	.sidebar-content {
-		flex: 1;
-		overflow-y: auto;
-		padding: 0.5rem;
-	}
-
-	.sidebar-content::-webkit-scrollbar {
-		width: 6px;
-	}
-
-	.sidebar-content::-webkit-scrollbar-track {
-		background: transparent;
-	}
-
-	.sidebar-content::-webkit-scrollbar-thumb {
-		background: #ddd;
-		border-radius: 3px;
-	}
-
-	.sidebar-content::-webkit-scrollbar-thumb:hover {
-		background: #ccc;
-	}
-
-	/* Drawing item in sidebar */
-	.drawing-item {
-		display: flex;
-		align-items: center;
-		gap: 0.875rem;
-		width: 100%;
-		padding: 0.75rem;
-		background: transparent;
-		border: none;
-		border-radius: 10px;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		text-align: left;
-	}
-
-	.drawing-item:hover {
-		background: #f5f5f5;
-	}
-
-	.drawing-item:active {
-		background: #eee;
-		transform: scale(0.98);
-	}
-
-	.drawing-thumbnail {
-		width: 48px;
-		height: 48px;
-		border-radius: 6px;
-		background: #fff;
-		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-		image-rendering: pixelated;
-		image-rendering: crisp-edges;
-		flex-shrink: 0;
-	}
-
-	.drawing-info {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.drawing-name {
-		font-weight: 600;
-		font-size: 0.9rem;
-		color: #000;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.drawing-meta {
-		display: flex;
-		gap: 0.5rem;
-		font-size: 0.75rem;
-		color: #888;
-	}
-
-	.drawing-meta .creator {
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 100px;
-	}
-
-	.drawing-meta .time {
-		white-space: nowrap;
-		color: #aaa;
-	}
-
-	.no-drawings {
-		padding: 2rem;
-		text-align: center;
-		color: #999;
-	}
-
-	/* Sidebar backdrop for mobile */
-	.sidebar-backdrop {
-		display: none;
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.3);
-		z-index: 140;
-		border: none;
-		cursor: pointer;
-	}
-
-	@media (max-width: 768px) {
-		.sidebar {
-			width: 280px;
-		}
-
-		.sidebar-backdrop {
-			display: block;
-		}
-	}
-
-	.overlay-controls {
-		position: fixed;
-		bottom: 2rem;
-		left: 0;
-		right: 0;
-		display: flex;
-		justify-content: center;
-		z-index: 100;
 		opacity: 0;
 		pointer-events: none;
 	}
 
-	.overlay-controls .btn-create {
+	.nav-arrow.visible {
+		opacity: 1;
 		pointer-events: auto;
 	}
 
-	.overlay-controls.fade-in {
-		animation: fadeInUp 0.4s ease-out forwards;
-		animation-delay: 0.2s;
+	.nav-arrow:hover:not(:disabled) {
+		background: #111;
+		border-color: #fff;
 	}
 
-	.btn-create {
+	.nav-arrow:active:not(:disabled) {
+		background: #222;
+	}
+
+
+	.nav-arrow-left {
+		left: 0.5rem;
+	}
+
+	.nav-arrow-right {
+		right: 0.5rem;
+	}
+
+	@media (max-width: 768px) {
+		.nav-arrow {
+			width: 32px;
+			height: 32px;
+		}
+
+		.nav-arrow-left {
+			left: 0.375rem;
+		}
+
+		.nav-arrow-right {
+			right: 0.375rem;
+		}
+	}
+
+	.stats-bar {
+		position: fixed;
+		top: 0.5rem;
+		left: 50%;
+		transform: translateX(-50%);
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		padding: 0.75rem 1.5rem;
-		background: #000;
-		border: none;
-		border-radius: 8px;
 		color: #fff;
-		font-weight: 600;
-		font-size: 1rem;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-		min-height: 48px; /* Touch target */
-	}
-
-	.btn-create:hover {
-		background: #333;
-		transform: translateY(-2px);
-		box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
-	}
-
-	.btn-create span {
-		font-size: 1.2rem;
-		font-weight: 400;
-	}
-
-	@media (max-width: 768px) {
-		.overlay-controls {
-			bottom: 1.25rem;
-		}
-
-		.btn-create {
-			padding: 0.875rem 1.75rem;
-			font-size: 1.05rem;
-			border-radius: 12px;
-		}
-	}
-
-	.drawing-count {
-		position: fixed;
-		bottom: 2rem;
-		left: 1.5rem;
-		color: #999;
-		font-size: 0.85rem;
+		font-size: 0.7rem;
 		z-index: 100;
 		opacity: 0;
+		background: #000;
+		padding: 0.25rem 0.5rem;
+		border: 1px solid #333;
+		transition: all 0.2s ease;
 	}
 
-	.drawing-count.fade-in {
-		animation: fadeInUp 0.4s ease-out forwards;
-		animation-delay: 0.15s;
-	}
-
-	@media (max-width: 768px) {
-		.drawing-count {
-			bottom: 1.25rem;
-			left: 1rem;
-			font-size: 0.75rem;
-			display: flex;
-			flex-direction: column;
-			line-height: 1.4;
-		}
-
-		.drawing-count .count-separator {
-			display: none;
-		}
-	}
-
-	.top-right-controls {
-		position: fixed;
-		top: 1rem;
-		right: 1rem;
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		z-index: 100;
-		opacity: 0;
-	}
-
-	.top-right-controls.fade-in {
-		animation: fadeInUp 0.4s ease-out forwards;
+	.stats-bar.fade-in {
+		animation: fadeInDown 0.3s ease-out forwards;
 		animation-delay: 0.1s;
 	}
 
-	.user-badge {
-		display: flex;
-		align-items: center;
-		padding: 0;
-		background: transparent;
-		border: none;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.user-badge:hover {
-		transform: scale(1.1);
-	}
-
-	.avatar {
-		width: 36px;
-		height: 36px;
+	.stats-bar.recent-info {
+		padding: 0.375rem 0.625rem;
 		background: #000;
-		border-radius: 50%;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-weight: 700;
-		font-size: 0.95rem;
+		border: 1px solid #444;
+	}
+
+	.stat {
+		font-weight: 500;
+	}
+
+	.drawing-title {
+		font-weight: 600;
 		color: #fff;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+		max-width: 200px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.stat.counter {
+		font-variant-numeric: tabular-nums;
+		color: #fff;
+	}
+
+	.stat-dot {
+		width: 3px;
+		height: 3px;
+		background: #fff;
+		flex-shrink: 0;
+	}
+
+	@keyframes fadeInDown {
+		from {
+			opacity: 0;
+			transform: translateX(-50%) translateY(-5px);
+		}
+		to {
+			opacity: 1;
+			transform: translateX(-50%) translateY(0);
+		}
+	}
+
+	@media (max-width: 768px) {
+		.stats-bar {
+			font-size: 0.65rem;
+			padding: 0.1875rem 0.375rem;
+			gap: 0.375rem;
+			max-width: calc(100% - 1rem);
+		}
+
+		.stats-bar.recent-info {
+			padding: 0.25rem 0.5rem;
+			max-width: calc(100% - 0.75rem);
+			white-space: nowrap;
+		}
+
+		.stats-bar.recent-info .drawing-title {
+			max-width: none;
+			flex-shrink: 1;
+			min-width: 0;
+		}
+
+		.drawing-title {
+			max-width: 100px;
+		}
+
+		.stat-dot {
+			width: 2px;
+			height: 2px;
+		}
 	}
 
 	.loading {
@@ -595,28 +1424,26 @@
 		align-items: center;
 		justify-content: center;
 		height: 100%;
-		color: #666;
+		color: #000;
 	}
 
 	.loading-title {
-		margin: 0 0 16px 0;
-		font-size: 1rem;
-		font-weight: 600;
+		margin: 0 0 8px 0;
+		font-size: 0.75rem;
+		font-weight: 500;
 		color: #000;
 	}
 
 	.progress-bar {
-		width: 280px;
-		height: 12px;
-		background: #e0e0e0;
-		border-radius: 6px;
+		width: 200px;
+		height: 2px;
+		background: #ccc;
 		overflow: hidden;
 	}
 
 	.progress-fill {
 		height: 100%;
 		background: #000;
-		border-radius: 6px;
 	}
 
 	.progress-fill.indeterminate {
@@ -637,8 +1464,7 @@
 	.modal-overlay {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.4);
-		backdrop-filter: blur(8px);
+		background: rgba(0, 0, 0, 0.8);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -646,21 +1472,19 @@
 	}
 
 	.modal {
-		background: #fff;
-		border: 1px solid #e0e0e0;
-		border-radius: 16px;
-		padding: 2.5rem;
-		max-width: 400px;
+		background: #000;
+		border: 1px solid #333;
+		padding: 1.25rem;
+		max-width: 320px;
 		width: 90%;
 		text-align: center;
-		animation: modalIn 0.2s ease-out;
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+		animation: modalIn 0.15s ease-out;
 	}
 
 	@keyframes modalIn {
 		from {
 			opacity: 0;
-			transform: scale(0.95) translateY(-10px);
+			transform: scale(0.98) translateY(-5px);
 		}
 		to {
 			opacity: 1;
@@ -669,54 +1493,53 @@
 	}
 
 	.modal h2 {
-		margin: 0 0 0.5rem 0;
-		color: #000;
-		font-size: 1.5rem;
+		margin: 0 0 0.25rem 0;
+		color: #fff;
+		font-size: 0.9rem;
+		font-weight: 600;
 	}
 
 	.modal p {
-		margin: 0 0 1.5rem 0;
-		color: #666;
+		margin: 0 0 0.75rem 0;
+		color: #fff;
+		font-size: 0.7rem;
 	}
 
 	.modal input {
 		width: 100%;
-		padding: 0.875rem 1rem;
-		background: #fff;
-		border: 2px solid #e0e0e0;
-		border-radius: 8px;
-		color: #000;
-		font-size: 1rem;
-		margin-bottom: 1rem;
+		padding: 0.5rem 0.625rem;
+		background: #000;
+		border: 1px solid #333;
+		color: #fff;
+		font-size: 0.75rem;
+		margin-bottom: 0.625rem;
 		transition: border-color 0.15s ease;
 	}
 
 	.modal input:focus {
 		outline: none;
-		border-color: #000;
+		border-color: #fff;
 	}
 
 	.modal input::placeholder {
-		color: #999;
+		color: #fff;
+		opacity: 0.5;
 	}
 
 	.btn-primary {
 		width: 100%;
-		padding: 0.875rem 1.5rem;
-		background: #000;
+		padding: 0.5rem 0.75rem;
+		background: #fff;
 		border: none;
-		border-radius: 8px;
-		color: #fff;
+		color: #000;
 		font-weight: 600;
-		font-size: 1rem;
+		font-size: 0.75rem;
 		cursor: pointer;
 		transition: all 0.15s ease;
 	}
 
 	.btn-primary:hover:not(:disabled) {
-		background: #333;
-		transform: translateY(-1px);
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+		background: #ccc;
 	}
 
 	.btn-primary:disabled {
@@ -724,15 +1547,166 @@
 		cursor: not-allowed;
 	}
 
-	/* Fade-in animation for controls */
-	@keyframes fadeInUp {
-		from {
-			opacity: 0;
-			transform: translateY(10px);
+	/* Create panel controls row */
+	.create-controls-row {
+		display: flex;
+		align-items: center;
+		gap: 0.125rem;
+		width: 100%;
+		justify-content: center;
+	}
+
+	/* Create panel bottom row with name input and buttons */
+	.create-bottom-row {
+		display: flex;
+		align-items: center;
+		gap: 0.125rem;
+		width: 100%;
+	}
+
+	.create-name-input {
+		flex: 1;
+		min-width: 0;
+		padding: 0.25rem 0.375rem;
+		background: #111;
+		border: 1px solid #333;
+		color: #fff;
+		font-size: 0.7rem;
+		transition: border-color 0.15s ease;
+	}
+
+	.create-name-input:focus {
+		outline: none;
+		border-color: #fff;
+	}
+
+	.create-name-input::placeholder {
+		color: #666;
+	}
+
+	.create-name-input.has-error {
+		border-color: #dc2626;
+	}
+
+	.create-grid-wrapper {
+		padding: 1px;
+		background: #333;
+		/* Mobile: larger grid that fits well */
+		width: min(220px, calc(100vw - 2rem));
+		height: min(220px, calc(100vw - 2rem));
+	}
+
+	.create-grid {
+		display: grid;
+		grid-template-columns: repeat(16, 1fr);
+		gap: 1px;
+		background: #333;
+		width: 100%;
+		height: 100%;
+		touch-action: none;
+		user-select: none;
+		cursor: crosshair;
+	}
+
+	.create-pixel {
+		aspect-ratio: 1;
+		width: 100%;
+		pointer-events: none;
+	}
+
+	.create-palette {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+	}
+
+	.create-color-swatch {
+		width: 24px;
+		height: 24px;
+		border: 1px solid #333;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		padding: 0;
+		flex-shrink: 0;
+	}
+
+	.create-color-swatch:hover {
+		border-color: #666;
+	}
+
+	.create-color-swatch.active {
+		border-color: #fff;
+		outline: 2px solid #fff;
+		outline-offset: 1px;
+	}
+
+	.create-clear-btn {
+		width: 24px;
+		height: 24px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: transparent;
+		border: 1px solid #333;
+		color: #666;
+		cursor: pointer;
+		transition: all 0.15s ease;
+		padding: 0;
+		flex-shrink: 0;
+	}
+
+	.create-clear-btn:hover {
+		border-color: #666;
+		color: #fff;
+	}
+	
+	/* Create panel action buttons - smaller on mobile */
+	.create-bottom-row .toolbar-btn {
+		padding: 0.375rem;
+		min-width: 32px;
+		min-height: 32px;
+	}
+	
+	.create-bottom-row .toolbar-btn svg {
+		width: 16px;
+		height: 16px;
+	}
+
+	.create-error {
+		color: #ff6b6b;
+		font-size: 0.65rem;
+		margin: 0;
+		padding: 0.25rem 0.375rem;
+		background: #1a0000;
+		border: 1px solid #330000;
+	}
+
+	@media (min-width: 768px) {
+		.toolbar-group.create-panel.active {
+			max-width: 260px;
+			gap: 0.5rem;
+			padding: 0.375rem;
 		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
+
+		.create-name-input {
+			padding: 0.375rem 0.5rem;
+			font-size: 0.7rem;
+		}
+
+		.create-grid-wrapper {
+			width: 220px;
+			height: 220px;
+		}
+
+		.create-color-swatch {
+			width: 22px;
+			height: 22px;
+		}
+
+		.create-clear-btn {
+			width: 22px;
+			height: 22px;
 		}
 	}
 </style>
+
