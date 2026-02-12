@@ -2311,7 +2311,7 @@
 <svelte:window onresize={resizeCanvas} />
 
 <div class="gallery-container" bind:this={container}>
-	{#if isComputing && !previewMode}
+	{#if isComputing && !previewMode && positions.size === 0}
 		<div class="loading-overlay">
 			<div class="loading-content">
 				<p class="loading-title">Computing UMAP layout</p>

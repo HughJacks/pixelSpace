@@ -1282,27 +1282,32 @@
 		}
 
 		.toolbar.create-mode {
-			/* Position create panel in bottom half so preview shows in top half */
-			bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
-			left: 50%;
-			right: auto;
-			transform: translateX(-50%);
+			/* Full width on mobile so create panel fills the screen */
+			bottom: 0;
+			left: 0;
+			right: 0;
+			transform: none;
+			width: 100%;
+			padding: 0.5rem 0.75rem;
+			padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0));
 			justify-content: center;
-			padding: 0.125rem;
 		}
 
 		.toolbar-group {
 			gap: 0.375rem;
 		}
 		
-		/* Mobile create panel - larger grid, tighter spacing */
+		/* Mobile create panel - full width, ~half viewport height */
 		.toolbar-group.create-panel {
-			gap: 0.25rem;
+			gap: 0.5rem;
+			width: 100%;
 		}
 		
 		.toolbar-group.create-panel.active {
-			max-width: calc(100vw - 1rem);
-			padding: 0.25rem;
+			max-width: 100%;
+			max-height: 55dvh;
+			padding: 0.5rem;
+			gap: 0.5rem;
 		}
 
 		.toolbar-btn {
@@ -1703,9 +1708,10 @@
 	.create-grid-wrapper {
 		padding: 1px;
 		background: #333;
-		/* Mobile: larger grid that fits well */
-		width: min(220px, calc(100vw - 2rem));
-		height: min(220px, calc(100vw - 2rem));
+		/* Size: as wide as the screen allows, capped to keep total panel ~50vh */
+		/* Desktop override (min-width: 768px) sets a fixed 220px below */
+		width: min(calc(100vw - 2.5rem), calc(50dvh - 7.5rem));
+		height: min(calc(100vw - 2.5rem), calc(50dvh - 7.5rem));
 	}
 
 	.create-grid {
@@ -1791,6 +1797,48 @@
 		padding: 0.25rem 0.375rem;
 		background: #1a0000;
 		border: 1px solid #330000;
+	}
+
+	/* Mobile create panel overrides - must come after defaults to win cascade */
+	@media (max-width: 768px) {
+		.create-color-swatch {
+			width: 30px;
+			height: 30px;
+		}
+
+		.create-clear-btn {
+			width: 30px;
+			height: 30px;
+		}
+
+		.create-palette {
+			gap: 5px;
+		}
+
+		.create-name-input {
+			padding: 0.5rem 0.625rem;
+			font-size: 0.875rem;
+			min-height: 44px;
+		}
+
+		.create-bottom-row .toolbar-btn {
+			padding: 0.5rem;
+			min-width: 44px;
+			min-height: 44px;
+		}
+
+		.create-bottom-row .toolbar-btn svg {
+			width: 20px;
+			height: 20px;
+		}
+
+		.create-bottom-row .toolbar-btn.primary {
+			padding: 0.5rem 1rem;
+		}
+
+		.create-bottom-row {
+			gap: 0.375rem;
+		}
 	}
 
 	@media (min-width: 768px) {
