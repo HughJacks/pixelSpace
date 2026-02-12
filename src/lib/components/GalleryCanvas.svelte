@@ -299,6 +299,8 @@
 		onClusterStateChange?: (isComputing: boolean, isAnimating: boolean) => void;
 		// Callback to expose recluster function to parent
 		onReclusterReady?: (reclusterFn: () => void) => void;
+		// Callback when intro animation completes
+		onIntroComplete?: () => void;
 	}
 
 	let { 
@@ -327,11 +329,14 @@
 		clusterMode = $bindable<'cluster' | 'timeline'>('cluster'),
 		onModeSwitch,
 		onClusterStateChange,
-		onReclusterReady
+		onReclusterReady,
+		onIntroComplete
 	}: Props = $props();
 	
-	// Derived: show preview when pixels are provided (works with or without full previewMode)
-	let showPreview = $derived(previewPixels.length > 0 && previewPixels.some(p => p !== COLOR_WHITE));
+	// Derived: show preview when pixels are provided OR when a saved preview is still showing
+	let showPreview = $derived(
+		(previewPixels.length > 0 && previewPixels.some(p => p !== COLOR_WHITE)) || previewSaved
+	);
 
 	// Expose centerOnDrawing method to parent
 	$effect(() => {
@@ -344,6 +349,13 @@
 	$effect(() => {
 		if (onReclusterReady) {
 			onReclusterReady(handleRecluster);
+		}
+	});
+	
+	// Notify parent when intro animation completes
+	$effect(() => {
+		if (introComplete && onIntroComplete) {
+			onIntroComplete();
 		}
 	});
 
@@ -450,10 +462,9 @@
 	let isFirstLoad = true;
 	let introComplete = $state(false);
 	let drawingOpacities: Map<string, number> = $state(new Map());
-	let introAnimationPhase: 'idle' | 'fadein' | 'waiting' | 'clustering' = $state('idle');
-	const FADE_IN_DURATION = 800; // Total duration for all fade-ins
-	const FADE_IN_STAGGER = 25; // Delay between each drawing
-	const WAIT_BEFORE_CLUSTER = 600; // Pause before clustering animation
+	let introAnimationPhase: 'idle' | 'fadein' = $state('idle');
+	const TOTAL_FADE_IN_TIME = 1800; // Fixed total duration for all fade-ins (ms)
+	const INDIVIDUAL_FADE_DURATION = 600; // Each drawing's own fade-in time (ms)
 	const INTRO_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes - show intro again after this long
 	const GALLERY_LAST_SEEN_KEY = 'pixelspace_gallery_last_seen';
 	
@@ -489,6 +500,11 @@
 
 	// Preview mode state - for predicting where new drawing would land
 	let previewPosition: { x: number; y: number } | null = $state(null);
+	let previewTargetPosition: { x: number; y: number } | null = null;
+	let previewTweenStart: { x: number; y: number } | null = null;
+	let previewTweenStartTime = 0;
+	let isPreviewTweening = false;
+	const PREVIEW_TWEEN_DURATION = 400; // ms for smooth position transition
 	let lastPreviewFeatures: number[] | null = null;
 	let previewComputeTimeout: ReturnType<typeof setTimeout> | null = null;
 	let cachedDrawingFeatures: Map<string, number[]> = new Map();
@@ -618,88 +634,112 @@
 		avgX /= totalWeight;
 		avgY /= totalWeight;
 		
-		// Add small random offset to avoid exact overlap
+		// Add deterministic offset based on pixel content to avoid exact overlap
+		// Uses a simple hash of pixels so the same drawing always gets the same offset
+		let hash = 0;
+		for (let i = 0; i < pixels.length; i += 7) {
+			hash = ((hash << 5) - hash + (pixels[i] ?? 0)) | 0;
+		}
 		const offset = DRAWING_SIZE * 0.8;
-		avgX += (Math.random() - 0.5) * offset;
-		avgY += (Math.random() - 0.5) * offset;
+		const hashNormX = ((hash & 0xFFFF) / 0xFFFF) - 0.5;       // -0.5 to 0.5
+		const hashNormY = (((hash >> 16) & 0xFFFF) / 0xFFFF) - 0.5;
+		avgX += hashNormX * offset;
+		avgY += hashNormY * offset;
 		
 		return { x: avgX, y: avgY };
 	}
 
-	// Track last pan position to avoid excessive panning
-	let lastPanPosition: { x: number; y: number } | null = null;
-	let hasPannedToPreview = false;
-	
-	// Pan to the preview position (only on significant changes)
-	function panToPreview(position: { x: number; y: number }) {
-		if (!canvas) return;
+	// Compute the viewport target offsets that place a world position in the top center of the screen
+	function viewportTargetForPreview(worldPos: { x: number; y: number }): { ox: number; oy: number } {
+		if (!canvas) return { ox: targetOffsetX, oy: targetOffsetY };
 		
-		// On mobile (narrow screens), offset the view so preview shows in top third
-		// This leaves room for the create panel at the bottom
+		// On mobile (narrow screens), shift up more to leave room for create panel
 		const isMobile = canvas.width < 768;
-		const verticalOffset = isMobile ? canvas.height * 0.25 : 0;
+		// Place the preview at roughly the top third of the visible area
+		const verticalBias = isMobile ? canvas.height * 0.25 : canvas.height * 0.15;
 		
-		// Calculate distance from current view center to preview position
-		const viewCenterX = (canvas.width / 2 - offsetX) / scale;
-		const viewCenterY = ((canvas.height / 2 - verticalOffset) - offsetY) / scale;
-		const distToCenter = Math.sqrt(
-			Math.pow(position.x - viewCenterX, 2) + 
-			Math.pow(position.y - viewCenterY, 2)
-		);
+		return {
+			ox: canvas.width / 2 - worldPos.x * targetScale,
+			oy: (canvas.height / 2 - verticalBias) - worldPos.y * targetScale
+		};
+	}
+	
+	// Smoothly tween preview position from current to target,
+	// and continuously update the viewport so the preview stays in the top center
+	function startPreviewTween(target: { x: number; y: number }) {
+		previewTargetPosition = target;
 		
-		// Check if position changed significantly from last pan
-		let positionChangedSignificantly = true;
-		if (lastPanPosition) {
-			const distFromLast = Math.sqrt(
-				Math.pow(position.x - lastPanPosition.x, 2) + 
-				Math.pow(position.y - lastPanPosition.y, 2)
-			);
-			// Only consider it significant if moved more than 1.5x the drawing size
-			positionChangedSignificantly = distFromLast > DRAWING_SIZE * 1.5;
-		}
-		
-		// Check if preview is visible in the top portion of screen (accounting for create panel)
-		const screenX = position.x * scale + offsetX;
-		const screenY = position.y * scale + offsetY;
-		const padding = DRAWING_SIZE * scale * 2;
-		const visibleHeight = isMobile ? canvas.height * 0.5 : canvas.height; // Only top half on mobile
-		const isOnScreen = 
-			screenX >= -padding && screenX <= canvas.width + padding &&
-			screenY >= -padding && screenY <= visibleHeight + padding;
-		
-		// Pan to preview if:
-		// 1. First time (haven't panned yet), OR
-		// 2. Preview is off-screen, OR
-		// 3. Position changed significantly
-		const shouldPan = !hasPannedToPreview || !isOnScreen || (positionChangedSignificantly && distToCenter > DRAWING_SIZE * 3);
-		
-		if (shouldPan) {
-			// Animate to show preview in top portion of screen (offset down on mobile)
-			targetOffsetX = canvas.width / 2 - position.x * targetScale;
-			targetOffsetY = (canvas.height / 2 - verticalOffset) - position.y * targetScale;
+		if (previewPosition) {
+			// Already visible - tween from current position
+			previewTweenStart = { ...previewPosition };
+		} else {
+			// First appearance - snap directly (no flashing)
+			previewPosition = { ...target };
+			previewTweenStart = { ...target };
 			
-			// Only zoom if we're zoomed out too far to see details
+			// On first appearance, also ensure we're zoomed in enough
 			if (targetScale < 1.2) {
 				targetScale = 1.5;
 			}
-			
-			// Stop any momentum
-			velocityX = 0;
-			velocityY = 0;
-			
-			lastPanPosition = { ...position };
-			hasPannedToPreview = true;
-			
-			startAnimation();
+		}
+		
+		// Stop any momentum so we smoothly track
+		velocityX = 0;
+		velocityY = 0;
+		
+		previewTweenStartTime = performance.now();
+		
+		if (!isPreviewTweening) {
+			isPreviewTweening = true;
+			requestAnimationFrame(animatePreviewTween);
 		}
 	}
 	
-	// Reset pan tracking when preview ends
+	function animatePreviewTween(timestamp: number) {
+		if (!previewTweenStart || !previewTargetPosition) {
+			isPreviewTweening = false;
+			return;
+		}
+		
+		const elapsed = timestamp - previewTweenStartTime;
+		const rawProgress = Math.min(elapsed / PREVIEW_TWEEN_DURATION, 1);
+		const t = easeInOutCubic(rawProgress);
+		
+		// Interpolate preview world position
+		previewPosition = {
+			x: previewTweenStart.x + (previewTargetPosition.x - previewTweenStart.x) * t,
+			y: previewTweenStart.y + (previewTargetPosition.y - previewTweenStart.y) * t
+		};
+		
+		// Continuously update viewport target to follow the preview
+		const { ox, oy } = viewportTargetForPreview(previewPosition);
+		targetOffsetX = ox;
+		targetOffsetY = oy;
+		startAnimation(); // Ensure the viewport animate loop is running
+		
+		scheduleRender();
+		
+		if (rawProgress < 1) {
+			requestAnimationFrame(animatePreviewTween);
+		} else {
+			// Snap to final target
+			previewPosition = { ...previewTargetPosition };
+			const final = viewportTargetForPreview(previewPosition);
+			targetOffsetX = final.ox;
+			targetOffsetY = final.oy;
+			isPreviewTweening = false;
+			startAnimation();
+			scheduleRender();
+		}
+	}
+	
+	// Reset tween state when preview fully ends (not saved, no content)
 	$effect(() => {
-		if (!showPreview) {
-			lastPanPosition = null;
-			hasPannedToPreview = false;
+		if (!showPreview && !previewSaved) {
 			previewPosition = null;
+			previewTargetPosition = null;
+			previewTweenStart = null;
+			isPreviewTweening = false;
 		}
 	});
 	
@@ -777,34 +817,37 @@
 		}
 	}
 
-	// Calculate spread factor based on number of drawings for consistent density
-	// This ensures the "world" size grows with more drawings to maintain spacing
-	function calculateDensityBasedSpread(numDrawings: number, isMobile: boolean): number {
+	// Calculate spread factor based on number of drawings for consistent density.
+	// World coordinates are device-independent: the viewport is just a window into
+	// a fixed coordinate space. This ensures clustering precision and relative
+	// positions are identical regardless of screen size.
+	function calculateDensityBasedSpread(numDrawings: number): number {
 		// Base spacing per drawing (area each drawing "owns")
-		const baseSpacing = isMobile ? MIN_SPACING * 1.2 : MIN_SPACING * 1.4;
+		const baseSpacing = MIN_SPACING * 1.4;
 		
 		// For N drawings in 2D, we need roughly sqrt(N) * spacing per dimension
 		// Add a density multiplier to control overall spread (higher = more spread out)
-		const densityMultiplier = isMobile ? 1.2 : 1.5;
+		const densityMultiplier = 1.5;
 		
 		// Calculate spread: sqrt(N) gives us the "side length" of a square grid
 		// that could hold N items, multiplied by spacing and density
 		const spread = Math.sqrt(Math.max(numDrawings, 1)) * baseSpacing * densityMultiplier;
 		
 		// Ensure a minimum spread so few drawings aren't bunched too tightly
-		const minSpread = isMobile ? 400 : 800;
+		const minSpread = 800;
 		
 		return Math.max(spread, minSpread);
 	}
 
-	// Compute positions based on visualization mode
+	// Compute positions based on visualization mode.
+	// All positions are in device-independent world coordinates.
+	// The viewport (zoom/pan) adapts to the screen; the world does not.
 	function computePositionsForMode(
 		currentDrawings: typeof drawings,
 		embeddings: [number, number][],
 		mode: 'cluster' | 'timeline'
 	): Map<string, { x: number; y: number }> {
 		const newPositions = new Map<string, { x: number; y: number }>();
-		const isMobile = canvas.width < 768;
 		const numDrawings = currentDrawings.length;
 		
 		if (mode === 'cluster') {
@@ -824,7 +867,7 @@
 			const rangeY = maxY - minY || 1;
 			
 			// Use density-based spread that scales with number of drawings
-			const spreadFactor = calculateDensityBasedSpread(numDrawings, isMobile);
+			const spreadFactor = calculateDensityBasedSpread(numDrawings);
 
 			currentDrawings.forEach((drawing, i) => {
 				if (embeddings[i]) {
@@ -852,7 +895,7 @@
 			
 			// For timeline, X spread is based on time range, Y spread is density-based
 			// Use wider horizontal spread for timeline to accommodate time axis
-			const baseSpread = calculateDensityBasedSpread(numDrawings, isMobile);
+			const baseSpread = calculateDensityBasedSpread(numDrawings);
 			const spreadFactor = baseSpread * 1.5; // Extra horizontal room for timeline
 			
 			// Store timeline range for axis rendering
@@ -870,10 +913,8 @@
 			});
 		}
 
-		// Push apart any overlapping drawings
-		// Use larger spacing on mobile to prevent dense clustering with aliasing issues
-		const mobileSpacing = isMobile ? MIN_SPACING * 1.8 : MIN_SPACING;
-		resolveCollisions(newPositions, mobileSpacing);
+		// Push apart any overlapping drawings with consistent spacing
+		resolveCollisions(newPositions, MIN_SPACING);
 		
 		return newPositions;
 	}
@@ -1054,25 +1095,6 @@
 		}
 	}
 
-	// Generate random positions spread across the canvas
-	function generateRandomPositions(drawingIds: string[]): Map<string, { x: number; y: number }> {
-		const randomPositions = new Map<string, { x: number; y: number }>();
-		const spreadX = canvas.width * 0.8;
-		const spreadY = canvas.height * 0.8;
-		
-		for (const id of drawingIds) {
-			randomPositions.set(id, {
-				x: (Math.random() - 0.5) * spreadX,
-				y: (Math.random() - 0.5) * spreadY
-			});
-		}
-		
-		// Resolve collisions so drawings don't overlap
-		resolveCollisions(randomPositions, MIN_SPACING, 4);
-		
-		return randomPositions;
-	}
-
 	// Shuffle array using Fisher-Yates algorithm
 	function shuffleArray<T>(array: T[]): T[] {
 		const shuffled = [...array];
@@ -1084,13 +1106,16 @@
 	}
 
 	// Start the intro animation sequence
+	// Places drawings at their final clustered positions, fits them in view,
+	// then fades them in with a staggered animation. Pan/zoom is disabled until complete.
 	function startIntroAnimation(drawingIds: string[], clusteredPositions: Map<string, { x: number; y: number }>) {
 		introAnimationPhase = 'fadein';
 		
-		// Shuffle the order for a more organic staggered appearance
-		const shuffledIds = shuffleArray(drawingIds);
-		const idToOrder = new Map<string, number>();
-		shuffledIds.forEach((id, i) => idToOrder.set(id, i));
+		// Place drawings at their final clustered positions immediately
+		positions = clusteredPositions;
+		
+		// Fit all drawings in view (snap, no animation)
+		fitAllInView(false, true);
 		
 		// Initialize all opacities to 0
 		const opacities = new Map<string, number>();
@@ -1099,17 +1124,16 @@
 		}
 		drawingOpacities = opacities;
 		
-		// Generate random starting positions
-		const randomPositions = generateRandomPositions(drawingIds);
-		positions = randomPositions;
-		
-		// Store clustered positions as target
-		targetPositions = clusteredPositions;
-		oldPositions = new Map(randomPositions); // Make a copy
+		// Shuffle the order for a more organic staggered appearance
+		const shuffledIds = shuffleArray(drawingIds);
+		const idToOrder = new Map<string, number>();
+		shuffledIds.forEach((id, i) => idToOrder.set(id, i));
 		
 		// Start the fade-in animation
 		const fadeInStart = performance.now();
-		const totalFadeInTime = FADE_IN_DURATION + (drawingIds.length * FADE_IN_STAGGER);
+		const stagger = drawingIds.length > 1
+			? (TOTAL_FADE_IN_TIME - INDIVIDUAL_FADE_DURATION) / (drawingIds.length - 1)
+			: 0;
 		
 		function animateFadeIn(timestamp: number) {
 			const elapsed = timestamp - fadeInStart;
@@ -1118,14 +1142,14 @@
 			const newOpacities = new Map<string, number>();
 			for (const id of drawingIds) {
 				const order = idToOrder.get(id) ?? 0;
-				const startTime = order * FADE_IN_STAGGER;
-				const drawingProgress = Math.max(0, Math.min(1, (elapsed - startTime) / FADE_IN_DURATION));
+				const startTime = order * stagger;
+				const drawingProgress = Math.max(0, Math.min(1, (elapsed - startTime) / INDIVIDUAL_FADE_DURATION));
 				newOpacities.set(id, easeOutQuad(drawingProgress));
 			}
 			drawingOpacities = newOpacities;
 			scheduleRender();
 			
-			if (elapsed < totalFadeInTime) {
+			if (elapsed < TOTAL_FADE_IN_TIME) {
 				requestAnimationFrame(animateFadeIn);
 			} else {
 				// Fade-in complete - all opacities to 1
@@ -1134,39 +1158,12 @@
 					fullOpacities.set(id, 1);
 				}
 				drawingOpacities = fullOpacities;
+				introAnimationPhase = 'idle';
+				introComplete = true;
+				markGallerySeen();
 				scheduleRender();
-				
-				// Wait a beat before clustering
-				introAnimationPhase = 'waiting';
-				setTimeout(() => {
-					// Start the clustering animation
-					introAnimationPhase = 'clustering';
-					isAnimatingPositions = true;
-					positionAnimationStart = performance.now();
-					positionAnimationProgress = 0;
-					requestAnimationFrame(animatePositions);
-					
-					// Start animating the view to fit all positions (animated zoom out)
-					setTimeout(() => {
-						fitAllInView(true); // Animate the zoom
-					}, POSITION_ANIMATION_DURATION * 0.2);
-					
-					// Mark intro complete when clustering animation ends
-					setTimeout(() => {
-						introComplete = true;
-						markGallerySeen();
-					}, POSITION_ANIMATION_DURATION + 200);
-				}, WAIT_BEFORE_CLUSTER);
 			}
 		}
-		
-		// Center view for the intro
-		offsetX = canvas.width / 2;
-		offsetY = canvas.height / 2;
-		targetOffsetX = offsetX;
-		targetOffsetY = offsetY;
-		scale = 1.2;
-		targetScale = scale;
 		
 		requestAnimationFrame(animateFadeIn);
 	}
@@ -1249,10 +1246,10 @@
 								fullOpacities.set(drawing.id, 1);
 							}
 							drawingOpacities = fullOpacities;
-							fitAllInView();
+							fitAllInView(false, true);
 							markGallerySeen();
 						} else if (shouldShowIntroAnimation()) {
-							// Start intro animation: random positions → fade in → cluster
+							// Start intro animation: fade in drawings at final positions
 							const drawingIds = currentDrawings.map(d => d.id);
 							startIntroAnimation(drawingIds, newPositions);
 						} else {
@@ -1265,7 +1262,7 @@
 								fullOpacities.set(drawing.id, 1);
 							}
 							drawingOpacities = fullOpacities;
-							fitAllInView();
+							fitAllInView(false, true);
 							markGallerySeen();
 						}
 					} else if (positions.size > 0) {
@@ -1282,7 +1279,7 @@
 					} else {
 						// Fallback - set positions directly and fit view
 						positions = newPositions;
-						fitAllInView();
+						fitAllInView(false, true);
 						introComplete = true;
 						markGallerySeen();
 					}
@@ -1333,6 +1330,9 @@
 				newPositions.set(newDrawing.id, { ...pendingPosition });
 				positions = newPositions;
 				
+				// Pre-cache the image so it renders immediately (no gray placeholder)
+				getDrawingImage(newDrawing);
+				
 				// Set full opacity for the new drawing immediately
 				const newOpacities = new Map(drawingOpacities);
 				newOpacities.set(newDrawing.id, 1);
@@ -1380,6 +1380,9 @@
 		if (!hasContent) {
 			// Clear preview position when canvas is empty
 			previewPosition = null;
+			previewTargetPosition = null;
+			previewTweenStart = null;
+			isPreviewTweening = false;
 			return;
 		}
 		
@@ -1388,16 +1391,20 @@
 			clearTimeout(previewComputeTimeout);
 		}
 		
+		// Compute immediately for the first preview (no position yet),
+		// debounce subsequent updates during rapid drawing
+		const needsImmediateCompute = untrack(() => previewPosition === null);
+		
 		previewComputeTimeout = setTimeout(() => {
 			// Use untrack to avoid deep reactive dependencies
 			const pixels = untrack(() => [...previewPixels]);
 			const pos = computePreviewPosition(pixels);
 			
 			if (pos) {
-				previewPosition = pos;
-				panToPreview(pos);
+				// Tween to the new position (viewport follows automatically)
+				startPreviewTween(pos);
 			}
-		}, 150); // 150ms debounce
+		}, needsImmediateCompute ? 0 : 150);
 		
 		return () => {
 			if (previewComputeTimeout) {
@@ -1419,6 +1426,7 @@
 		const _showPreview = showPreview; // Track preview state
 		const _previewSaved = previewSaved; // Track preview saved state for opacity change
 		const _highlighted = highlightedDrawingId; // Track highlighted drawing for recent mode
+		const _previewPixels = previewPixels; // Track preview pixel changes for immediate re-render
 		
 		if (ctx && _drawings) {
 			scheduleRender();
@@ -1486,11 +1494,16 @@
 		if (ctx) {
 			ctx.imageSmoothingEnabled = false;
 		}
-		offsetX = canvas.width / 2;
-		offsetY = canvas.height / 2;
-		targetOffsetX = offsetX;
-		targetOffsetY = offsetY;
-		targetScale = scale;
+		// If we have positions, re-fit the view to show all drawings
+		if (positions.size > 0) {
+			fitAllInView(false, true);
+		} else {
+			offsetX = canvas.width / 2;
+			offsetY = canvas.height / 2;
+			targetOffsetX = offsetX;
+			targetOffsetY = offsetY;
+			targetScale = scale;
+		}
 		scheduleRender();
 	}
 
@@ -1544,6 +1557,10 @@
 			scale = finalScale;
 			offsetX = targetOffsetX;
 			offsetY = targetOffsetY;
+			// Immediately notify parent to prevent sync effects from overriding
+			if (onViewChange) {
+				onViewChange(scale, offsetX, offsetY);
+			}
 		}
 		
 		startAnimation();
@@ -1769,18 +1786,25 @@
 			return;
 		}
 		
-		// Create or update cached preview image
-		const pixelsKey = previewPixels.join(',');
-		if (!previewImageCache || previewImageCache.pixels !== pixelsKey) {
-			const svg = generatePreviewSVG(previewPixels);
-			const dataUrl = 'data:image/svg+xml;base64,' + btoa(svg);
-			const img = new Image();
-			img.src = dataUrl;
-			previewImageCache = { pixels: pixelsKey, img };
-			// Re-render when image loads
-			img.onload = () => scheduleRender();
+		// When in saved state, keep using the cached image (don't regenerate from
+		// previewPixels which may have been cleared by the parent)
+		const hasPixelContent = previewPixels.length > 0 && previewPixels.some(p => p !== COLOR_WHITE);
+		if (hasPixelContent) {
+			// Create or update cached preview image from current pixels
+			const pixelsKey = previewPixels.join(',');
+			if (!previewImageCache || previewImageCache.pixels !== pixelsKey) {
+				const svg = generatePreviewSVG(previewPixels);
+				const dataUrl = 'data:image/svg+xml;base64,' + btoa(svg);
+				const img = new Image();
+				img.src = dataUrl;
+				previewImageCache = { pixels: pixelsKey, img };
+				// Re-render when image loads
+				img.onload = () => scheduleRender();
+			}
 		}
+		// If no pixel content but previewSaved, we just reuse the last cached image
 		
+		if (!previewImageCache) return;
 		const img = previewImageCache.img;
 		if (!img.complete) return;
 		
@@ -1917,8 +1941,8 @@
 	}
 
 	function handleWheel(event: WheelEvent) {
-		// Disable interaction in preview mode
-		if (previewMode) return;
+		// Disable interaction in preview mode or during intro animation
+		if (previewMode || !introComplete) return;
 		
 		event.preventDefault();
 
@@ -1928,7 +1952,7 @@
 
 		// Zoom toward cursor - set target values for smooth animation
 		const zoomFactor = event.deltaY > 0 ? 0.95 : 1.05;
-		const minScale = Math.max(Math.min(getMinScaleForBounds(), 1), 0.3);
+		const minScale = Math.min(getMinScaleForBounds(), 1);
 		const newScale = Math.max(minScale, Math.min(5, targetScale * zoomFactor));
 
 		// Adjust offset to zoom toward cursor
@@ -1944,8 +1968,8 @@
 	}
 
 	function handlePointerDown(event: PointerEvent) {
-		// Disable interaction in preview mode
-		if (previewMode) return;
+		// Disable interaction in preview mode or during intro animation
+		if (previewMode || !introComplete) return;
 		
 		// Skip if pinching (touch events handle this)
 		if (isPinching || event.pointerType === 'touch') return;
@@ -2088,8 +2112,8 @@
 
 	// Touch event handlers for pinch-to-zoom and panning
 	function handleTouchStart(event: TouchEvent) {
-		// Disable interaction in preview mode
-		if (previewMode) return;
+		// Disable interaction in preview mode or during intro animation
+		if (previewMode || !introComplete) return;
 		
 		// Clear stale touches and rebuild from current event
 		activeTouches.clear();
@@ -2155,7 +2179,7 @@
 
 			// Calculate new scale based on pinch
 			const scaleChange = currentDistance / initialPinchDistance;
-			const minScale = Math.max(Math.min(getMinScaleForBounds(), 0.5), 0.3);
+			const minScale = Math.min(getMinScaleForBounds(), 1);
 			const newScale = Math.max(minScale, Math.min(5, initialPinchScale * scaleChange));
 
 			// Current pinch center

@@ -10,6 +10,7 @@
 	let usernameInput = $state('');
 	let drawings: Drawing[] = $state([]);
 	let isLoading = $state(true);
+	let introAnimationDone = $state(false);
 	let showCreate = $state(false);
 	let pendingCreate = $state(false); // Track if user wants to create after setting username
 
@@ -30,9 +31,10 @@
 	let savedPreviewActive = $state(false);
 
 	// Shared view state between gallery and create mode
-	let viewScale = $state(2.5);
-	let viewOffsetX = $state(0);
-	let viewOffsetY = $state(0);
+	// Start as undefined so GalleryCanvas can fitAllInView without the sync effect overriding it
+	let viewScale: number | undefined = $state(undefined);
+	let viewOffsetX: number | undefined = $state(undefined);
+	let viewOffsetY: number | undefined = $state(undefined);
 
 	function handleViewChange(scale: number, offsetX: number, offsetY: number) {
 		viewScale = scale;
@@ -88,6 +90,33 @@
 	}
 	
 	function handleRecluster() {
+		reclusterFn?.();
+	}
+	
+	// Mobile: randomize all cluster params and trigger recluster
+	function handleRandomRecluster() {
+		// Randomly toggle each weight (ensure at least one is on)
+		const c = Math.random() > 0.4;
+		const s = Math.random() > 0.4;
+		const t = Math.random() > 0.4;
+		// If all ended up off, pick one at random
+		if (!c && !s && !t) {
+			const pick = Math.floor(Math.random() * 3);
+			clusterWeightColor = pick === 0;
+			clusterWeightShape = pick === 1;
+			clusterWeightStyle = pick === 2;
+		} else {
+			clusterWeightColor = c;
+			clusterWeightShape = s;
+			clusterWeightStyle = t;
+		}
+		// Random params
+		clusterNeighbors = Math.round(2 + Math.random() * 48); // 2-50
+		clusterSpread = 0.01 + Math.random() * 0.99; // 0.01-1.0
+		clusterQuality = Math.round(50 + Math.random() * 450); // 50-500
+		// Force cluster mode (no timeline on mobile)
+		clusterMode = 'cluster';
+		// Trigger recluster
 		reclusterFn?.();
 	}
 	
@@ -258,8 +287,12 @@
 			username = storedUsername;
 		}
 
-		// Fetch drawings
-		getAllDrawings()
+		// Fetch drawings - show cached data instantly, then merge server data
+		getAllDrawings((cachedData) => {
+				// Cache is ready - show drawings immediately
+				drawings = cachedData;
+				isLoading = false;
+			})
 			.then((data) => {
 				drawings = data;
 			})
@@ -274,20 +307,34 @@
 		const unsubscribe = subscribeToDrawings((newDrawing) => {
 			drawings = [newDrawing, ...drawings];
 			
-			// Clear saved preview when the real drawing arrives from subscription
+			// Clear saved preview after a short delay to let GalleryCanvas
+			// place the real drawing first (avoiding a flash of empty space)
 			if (savedPreviewActive) {
-				savedPreviewActive = false;
-				savedPreviewPixels = [];
+				setTimeout(() => {
+					savedPreviewActive = false;
+					savedPreviewPixels = [];
+					pendingNewDrawingPosition = null;
+				}, 300);
 			}
 		});
 
-		// Add keyboard listener
-		window.addEventListener('keydown', handleKeydown);
+	// Add keyboard listener
+	window.addEventListener('keydown', handleKeydown);
 
-		return () => {
-			unsubscribe();
-			window.removeEventListener('keydown', handleKeydown);
-		};
+	// Close tune panel when resizing to mobile (it's hidden on mobile via CSS,
+	// but showTunePanel being true also hides the main buttons, causing an empty toolbar)
+	function handleResize() {
+		if (window.innerWidth <= 768 && showTunePanel) {
+			showTunePanel = false;
+		}
+	}
+	window.addEventListener('resize', handleResize);
+
+	return () => {
+		unsubscribe();
+		window.removeEventListener('keydown', handleKeydown);
+		window.removeEventListener('resize', handleResize);
+	};
 	});
 
 	function handleSetUsername() {
@@ -442,10 +489,10 @@
 				createPixels = getDefaultPixels();
 				createName = '';
 				
-				// Clear pending position after a short delay (give time for the drawing to be placed)
+				// Clear pending position after a generous delay (allow time for realtime subscription to deliver the drawing)
 				setTimeout(() => {
 					pendingNewDrawingPosition = null;
-				}, 1000);
+				}, 30000);
 				
 				// Safety fallback: clear saved preview after 5s if subscription hasn't fired
 				setTimeout(() => {
@@ -522,11 +569,12 @@
 			bind:clusterMode
 			onClusterStateChange={handleClusterStateChange}
 			onReclusterReady={handleReclusterReady}
+			onIntroComplete={() => { introAnimationDone = true; }}
 		/>
 	{/if}
 
 	<!-- Unified bottom toolbar -->
-	<div class="toolbar" class:fade-in={!isLoading} class:recent-mode={recentMode} class:tune-mode={showTunePanel} class:create-mode={showCreate}>
+	<div class="toolbar" class:fade-in={introAnimationDone} class:recent-mode={recentMode} class:tune-mode={showTunePanel} class:create-mode={showCreate}>
 		<!-- Main mode buttons -->
 		<div class="toolbar-group main-buttons" class:active={!recentMode && !showTunePanel && !showCreate}>
 			<button
@@ -548,8 +596,9 @@
 				<span>Create</span>
 			</button>
 
+			<!-- Desktop: open tune panel -->
 			<button
-				class="toolbar-btn"
+				class="toolbar-btn desktop-only"
 				class:active={showTunePanel}
 				onclick={() => (showTunePanel = !showTunePanel)}
 				aria-label="Tune visualization"
@@ -560,7 +609,27 @@
 					<circle cx="6" cy="15" r="2" stroke="currentColor" stroke-width="1.5"/>
 					<path d="M8 5h9M3 5h1M16 10h1M3 10h9M8 15h9M3 15h1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 				</svg>
-				</button>
+			</button>
+			<!-- Mobile: random recluster -->
+			<button
+				class="toolbar-btn mobile-only"
+				onclick={handleRandomRecluster}
+				disabled={isComputing || isAnimating || drawings.length === 0}
+				aria-label="Shuffle clustering"
+			>
+				{#if isComputing || isAnimating}
+					<svg width="20" height="20" viewBox="0 0 20 20" fill="none" class="spinning">
+						<path d="M10 3v3M10 14v3M3 10h3M14 10h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+				{:else}
+					<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+						<path d="M3 7h2.5a2 2 0 0 1 1.8 1.1L8 10l.7 1.9A2 2 0 0 0 10.5 13H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<path d="M3 13h2.5a2 2 0 0 0 1.8-1.1L8 10l.7-1.9A2 2 0 0 1 10.5 7H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<path d="M14 5l2 2-2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+						<path d="M14 11l2 2-2 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				{/if}
+			</button>
 			</div>
 
 		<!-- Create mode panel -->
@@ -770,8 +839,8 @@
 					</svg>
 				{:else}
 					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M14.5 9A5.5 5.5 0 1 1 9 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						<path d="M9 1v5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+						<path d="M3.5 9A5.5 5.5 0 1 0 9 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						<path d="M9 1v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
 				{/if}
 			</button>
@@ -838,7 +907,7 @@
 		</svg>
 	</button>
 
-	<div class="stats-bar" class:fade-in={!isLoading} class:hidden={showCreate} class:recent-info={recentMode}>
+	<div class="stats-bar" class:fade-in={introAnimationDone} class:hidden={showCreate} class:recent-info={recentMode}>
 		{#if recentMode && highlightedDrawing}
 			<span class="drawing-title">{highlightedDrawing.name}</span>
 			<span class="stat-dot"></span>
@@ -1171,7 +1240,7 @@
 	}
 
 	.toolbar-btn.primary span {
-		margin-left: 0.125rem;
+		display: none;
 	}
 
 	.toolbar-btn:disabled {
@@ -1179,11 +1248,36 @@
 		cursor: not-allowed;
 	}
 
+	/* Desktop/mobile visibility toggles */
+	.desktop-only {
+		display: flex;
+	}
+	.mobile-only {
+		display: none;
+	}
+
+	/* Spinning animation for mobile shuffle button loading state */
+	.toolbar-btn svg.spinning {
+		animation: spin 1s linear infinite;
+	}
+
 	@media (max-width: 768px) {
+		.desktop-only {
+			display: none !important;
+		}
+		.mobile-only {
+			display: flex !important;
+		}
+
+		/* Hide tune panel entirely on mobile */
+		.toolbar-group.tune-buttons {
+			display: none !important;
+		}
 		.toolbar {
 			bottom: 0.375rem;
 			left: 50%;
 			transform: translateX(-50%);
+			max-width: calc(100vw - 0.75rem);
 			padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
 		}
 
@@ -1224,44 +1318,62 @@
 			display: none;
 		}
 
-		/* Mobile clustering controls */
+		/* Mobile tune toolbar - keep compact to fit screen */
+		.toolbar-group.tune-buttons.active {
+			max-width: calc(100vw - 1.5rem);
+		}
+
+		.toggle-group {
+			gap: 1px;
+		}
+
 		.toggle-btn {
-			width: 36px;
-			height: 36px;
-			font-size: 0.8rem;
+			width: 30px;
+			height: 30px;
+			font-size: 0.75rem;
 		}
 
 		.dial-group {
-			gap: 0.375rem;
+			gap: 0.25rem;
 		}
 
 		.radial-dial {
-			width: 36px;
-			height: 36px;
-		}
-
-		.dial-knob {
 			width: 30px;
 			height: 30px;
 		}
 
+		.dial-knob {
+			width: 26px;
+			height: 26px;
+		}
+
 		.dial-indicator {
-			height: 8px;
+			height: 7px;
 		}
 
 		.dial-label {
-			font-size: 0.55rem;
-			bottom: -12px;
+			font-size: 0.5rem;
+			bottom: -11px;
+		}
+
+		.mode-toggle-group {
+			gap: 1px;
 		}
 
 		.mode-btn {
-			width: 36px;
-			height: 36px;
+			width: 30px;
+			height: 30px;
 		}
 
 		.toolbar-divider {
-			height: 28px;
-			margin: 0 0.25rem;
+			height: 24px;
+			margin: 0 0.125rem;
+		}
+
+		.toolbar.tune-mode .toolbar-btn {
+			padding: 0.375rem;
+			min-width: 30px;
+			min-height: 30px;
 		}
 	}
 

@@ -124,8 +124,15 @@ async function getLatestCachedTimestamp(): Promise<string | null> {
 	}
 }
 
-// Fetch all drawings with caching
-export async function getAllDrawings(): Promise<Drawing[]> {
+// Network fetch timeout - fail fast instead of waiting for browser default (~60s)
+const FETCH_TIMEOUT_MS = 10_000;
+
+// Fetch all drawings with caching.
+// If onCacheReady is provided, it will be called as soon as cached drawings are
+// available (before the network request completes), so the UI can show them instantly.
+export async function getAllDrawings(
+	onCacheReady?: (drawings: Drawing[]) => void
+): Promise<Drawing[]> {
 	const totalStart = performance.now();
 
 	// Step 1: Load from cache first
@@ -134,12 +141,20 @@ export async function getAllDrawings(): Promise<Drawing[]> {
 	const cacheTime = performance.now() - cacheStart;
 	console.log(`[Load] Cache read: ${cachedDrawings.length} drawings in ${cacheTime.toFixed(1)}ms`);
 
+	// Deliver cached drawings immediately so the UI can render them
+	if (cachedDrawings.length > 0 && onCacheReady) {
+		onCacheReady(cachedDrawings);
+	}
+
 	// Step 2: Get the latest timestamp we have cached
 	const latestTimestamp = await getLatestCachedTimestamp();
 
-	// Step 3: Fetch only new drawings from server
+	// Step 3: Fetch only new drawings from server (with timeout)
 	const fetchStart = performance.now();
 	try {
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
 		let query = supabase.from('drawings').select('*').order('created_at', { ascending: false });
 
 		if (latestTimestamp && cachedDrawings.length > 0) {
@@ -150,7 +165,8 @@ export async function getAllDrawings(): Promise<Drawing[]> {
 			console.log('[Load] No cache, fetching all drawings');
 		}
 
-		const { data: records, error } = await query;
+		const { data: records, error } = await query.abortSignal(controller.signal);
+		clearTimeout(timeoutId);
 
 		if (error) throw error;
 

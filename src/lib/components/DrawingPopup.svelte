@@ -22,7 +22,7 @@
 	// Position popup above and to the top-right of cursor
 	// Keep popup within viewport bounds - estimate pill width at ~350px max
 	let adjustedX = $derived(Math.min(Math.max(x + 15, 10), window.innerWidth - 350));
-	let adjustedY = $derived(Math.max(y - 55, 10));
+	let adjustedY = $derived(Math.max(y - 35, 10));
 </script>
 
 {#if visible && drawing}
