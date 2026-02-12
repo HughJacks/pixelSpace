@@ -634,47 +634,47 @@
 
 		<!-- Create mode panel -->
 		<div class="toolbar-group create-panel" class:active={showCreate}>
-			<!-- Pixel grid -->
-			<div class="create-grid-wrapper">
-				<div
-					class="create-grid"
-					bind:this={createGridContainer}
-					onpointerdown={handleCreatePointerDown}
-					onpointermove={handleCreatePointerMove}
-					onpointerup={handleCreatePointerUp}
-					onpointercancel={handleCreatePointerUp}
-					onpointerleave={handleCreatePointerUp}
-					oncontextmenu={handleCreateContextMenu}
-				>
-					{#each createGrid as row, y}
-						{#each row as colorIndex, x}
-							<div
-								class="create-pixel"
-								style="background-color: {colorToHex(PALETTE[colorIndex] ?? PALETTE[COLOR_WHITE])}"
-							></div>
+			<!-- Top area: palette + grid (side by side on mobile, stacked on desktop) -->
+			<div class="create-top-area">
+				<div class="create-palette-col">
+					<div class="create-palette">
+						{#each PALETTE as color, index}
+							<button
+								class="create-color-swatch"
+								class:active={createSelectedColor === index}
+								style="background-color: {colorToHex(color)}"
+								onclick={() => (createSelectedColor = index)}
+								title={color.name}
+							></button>
 						{/each}
-					{/each}
+					</div>
+					<button class="create-clear-btn" onclick={clearCreateCanvas} title="Clear">
+						<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+							<path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+						</svg>
+					</button>
 				</div>
-			</div>
-
-			<!-- Color palette row -->
-			<div class="create-controls-row">
-				<div class="create-palette">
-					{#each PALETTE as color, index}
-						<button
-							class="create-color-swatch"
-							class:active={createSelectedColor === index}
-							style="background-color: {colorToHex(color)}"
-							onclick={() => (createSelectedColor = index)}
-							title={color.name}
-						></button>
-					{/each}
+				<div class="create-grid-wrapper">
+					<div
+						class="create-grid"
+						bind:this={createGridContainer}
+						onpointerdown={handleCreatePointerDown}
+						onpointermove={handleCreatePointerMove}
+						onpointerup={handleCreatePointerUp}
+						onpointercancel={handleCreatePointerUp}
+						onpointerleave={handleCreatePointerUp}
+						oncontextmenu={handleCreateContextMenu}
+					>
+						{#each createGrid as row, y}
+							{#each row as colorIndex, x}
+								<div
+									class="create-pixel"
+									style="background-color: {colorToHex(PALETTE[colorIndex] ?? PALETTE[COLOR_WHITE])}"
+								></div>
+							{/each}
+						{/each}
+					</div>
 				</div>
-				<button class="create-clear-btn" onclick={clearCreateCanvas} title="Clear">
-					<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-						<path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-				</button>
 			</div>
 
 			<!-- Name input and buttons row -->
@@ -1282,12 +1282,12 @@
 		}
 
 		.toolbar.create-mode {
-			/* Full width on mobile so create panel fills the screen */
-			bottom: 0;
-			left: 0;
-			right: 0;
-			transform: none;
-			width: 100%;
+			/* Centered with spacing from edges */
+			bottom: 0.75rem;
+			left: 50%;
+			transform: translateX(-50%);
+			width: calc(100% - 1.5rem);
+			max-width: calc(100vw - 1.5rem);
 			padding: 0.5rem 0.75rem;
 			padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0));
 			justify-content: center;
@@ -1664,13 +1664,23 @@
 		cursor: not-allowed;
 	}
 
-	/* Create panel controls row */
-	.create-controls-row {
+	/* Top area: grid + palette (stacked on desktop, side-by-side on mobile) */
+	.create-top-area {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.25rem;
+		width: 100%;
+	}
+
+	/* Palette column wrapper (row on desktop, column on mobile) */
+	.create-palette-col {
 		display: flex;
 		align-items: center;
 		gap: 0.125rem;
 		width: 100%;
 		justify-content: center;
+		order: 1; /* Below grid on desktop */
 	}
 
 	/* Create panel bottom row with name input and buttons */
@@ -1766,7 +1776,7 @@
 		justify-content: center;
 		background: transparent;
 		border: 1px solid #333;
-		color: #666;
+		color: #fff;
 		cursor: pointer;
 		transition: all 0.15s ease;
 		padding: 0;
@@ -1801,18 +1811,47 @@
 
 	/* Mobile create panel overrides - must come after defaults to win cascade */
 	@media (max-width: 768px) {
+		/* Side-by-side layout: palette left, grid right - top edges aligned */
+		.create-top-area {
+			flex-direction: row;
+			align-items: flex-start;
+			gap: 0.5rem;
+		}
+
+		.create-palette-col {
+			flex-direction: column;
+			align-items: center;
+			gap: 0.375rem;
+			order: 0; /* Left side */
+			width: auto;
+			justify-content: center;
+		}
+
+		/* 2-column color grid on mobile */
+		.create-palette {
+			display: grid;
+			grid-template-columns: repeat(2, 1fr);
+			gap: 5px;
+		}
+
 		.create-color-swatch {
 			width: 30px;
 			height: 30px;
 		}
 
 		.create-clear-btn {
-			width: 30px;
+			width: 100%;
 			height: 30px;
 		}
 
-		.create-palette {
-			gap: 5px;
+		/* Grid fills remaining space, stays square */
+		.create-grid-wrapper {
+			order: 1; /* Right side */
+			flex: 1;
+			width: auto;
+			height: auto;
+			aspect-ratio: 1;
+			max-height: calc(55dvh - 7rem);
 		}
 
 		.create-name-input {
