@@ -648,11 +648,6 @@
 							></button>
 						{/each}
 					</div>
-					<button class="create-clear-btn" onclick={clearCreateCanvas} title="Clear">
-						<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-							<path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						</svg>
-					</button>
 				</div>
 				<div class="create-grid-wrapper">
 					<div
@@ -970,7 +965,7 @@
 		align-items: stretch;
 		background: #000;
 		border: 1px solid #333;
-		padding: 0.25rem;
+		padding: 0.125rem;
 		z-index: 200;
 		opacity: 0;
 		pointer-events: none;
@@ -1765,27 +1760,9 @@
 		border-color: #fff;
 		outline: 2px solid #fff;
 		outline-offset: 1px;
+		z-index: 1;
 	}
 
-	.create-clear-btn {
-		width: 24px;
-		height: 24px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: transparent;
-		border: 1px solid #333;
-		color: #fff;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		padding: 0;
-		flex-shrink: 0;
-	}
-
-	.create-clear-btn:hover {
-		border-color: #666;
-		color: #fff;
-	}
 	
 	/* Create panel action buttons - smaller on mobile */
 	.create-bottom-row .toolbar-btn {
@@ -1820,27 +1797,25 @@
 		.create-palette-col {
 			flex-direction: column;
 			align-items: center;
-			gap: 0.375rem;
 			order: 0; /* Left side */
 			width: auto;
-			justify-content: center;
+			/* Match grid height: palette stretches to fill */
+			align-self: stretch;
 		}
 
-		/* 1-column color grid on mobile */
+		/* 1-column color grid on mobile, fills height of grid */
 		.create-palette {
-			display: grid;
-			grid-template-columns: 1fr;
-			gap: 5px;
+			display: flex;
+			flex-direction: column;
+			justify-content: space-between;
+			height: 100%;
+			gap: 0;
 		}
 
 		.create-color-swatch {
 			width: 30px;
-			height: 30px;
-		}
-
-		.create-clear-btn {
-			width: 100%;
-			height: 30px;
+			flex: 1;
+			height: auto;
 		}
 
 		/* Grid fills remaining space, stays square */
@@ -1901,10 +1876,7 @@
 			height: 22px;
 		}
 
-		.create-clear-btn {
-			width: 22px;
-			height: 22px;
-		}
+	
 	}
 </style>
 
