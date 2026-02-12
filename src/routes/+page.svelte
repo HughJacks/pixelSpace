@@ -1277,17 +1277,16 @@
 			bottom: 0.375rem;
 			left: 50%;
 			transform: translateX(-50%);
-			max-width: calc(100vw - 0.75rem);
+			width: fit-content;
+			min-width: 0;
+			max-width: calc(100vw - 1.5rem);
 			padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
+			transition: min-width 0.3s ease, bottom 0.25s ease, padding 0.25s ease;
 		}
 
 		.toolbar.create-mode {
-			/* Centered with spacing from edges */
 			bottom: 0.75rem;
-			left: 50%;
-			transform: translateX(-50%);
-			width: calc(100% - 1.5rem);
-			max-width: calc(100vw - 1.5rem);
+			min-width: calc(100vw - 1.5rem);
 			padding: 0.5rem 0.75rem;
 			padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0));
 			justify-content: center;
@@ -1827,10 +1826,10 @@
 			justify-content: center;
 		}
 
-		/* 2-column color grid on mobile */
+		/* 1-column color grid on mobile */
 		.create-palette {
 			display: grid;
-			grid-template-columns: repeat(2, 1fr);
+			grid-template-columns: 1fr;
 			gap: 5px;
 		}
 
