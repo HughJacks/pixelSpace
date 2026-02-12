@@ -1282,8 +1282,8 @@
 		.toolbar.create-mode {
 			bottom: 0.75rem;
 			min-width: calc(100vw - 1.5rem);
-			padding: 0.5rem 0.75rem;
-			padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0));
+			padding: 0.25rem;
+			padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0));
 			justify-content: center;
 		}
 
@@ -1300,8 +1300,8 @@
 		.toolbar-group.create-panel.active {
 			max-width: 100%;
 			max-height: none;
-			padding: 0.5rem;
-			gap: 0.5rem;
+			padding: 0.25rem;
+			gap: 0.375rem;
 		}
 
 		.toolbar-btn {
@@ -1791,7 +1791,7 @@
 		.create-top-area {
 			flex-direction: row;
 			align-items: flex-start;
-			gap: 0.5rem;
+			gap: 0.25rem;
 		}
 
 		.create-palette-col {
