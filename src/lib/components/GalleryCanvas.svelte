@@ -368,8 +368,8 @@
 		targetScale = Math.max(targetScale, 2);
 		
 		// Animate to center on the drawing (using the updated targetScale)
-		targetOffsetX = canvas.width / 2 - pos.x * targetScale;
-		targetOffsetY = canvas.height / 2 - pos.y * targetScale;
+		targetOffsetX = canvasWidth / 2 - pos.x * targetScale;
+		targetOffsetY = canvasHeight / 2 - pos.y * targetScale;
 		
 		// Stop any momentum
 		velocityX = 0;
@@ -381,6 +381,11 @@
 	let canvas: HTMLCanvasElement;
 	let ctx: CanvasRenderingContext2D | null = null;
 	let container: HTMLDivElement;
+
+	// High-DPI support: track device pixel ratio and CSS dimensions separately
+	let dpr = 1;
+	let canvasWidth = $state(0);
+	let canvasHeight = $state(0);
 
 	// Transform state - use props if provided, otherwise defaults
 	let scale = $state(viewScale ?? 2.5);
@@ -654,13 +659,13 @@
 		if (!canvas) return { ox: targetOffsetX, oy: targetOffsetY };
 		
 		// On mobile (narrow screens), shift up more to leave room for create panel
-		const isMobile = canvas.width < 768;
+		const isMobile = canvasWidth < 768;
 		// Place the preview at roughly the top third of the visible area
-		const verticalBias = isMobile ? canvas.height * 0.25 : canvas.height * 0.15;
+		const verticalBias = isMobile ? canvasHeight * 0.25 : canvasHeight * 0.15;
 		
 		return {
-			ox: canvas.width / 2 - worldPos.x * targetScale,
-			oy: (canvas.height / 2 - verticalBias) - worldPos.y * targetScale
+			ox: canvasWidth / 2 - worldPos.x * targetScale,
+			oy: (canvasHeight / 2 - verticalBias) - worldPos.y * targetScale
 		};
 	}
 	
@@ -1488,9 +1493,15 @@
 	function resizeCanvas() {
 		if (!container || !canvas) return;
 		const rect = container.getBoundingClientRect();
-		canvas.width = rect.width;
-		canvas.height = rect.height;
-		// Re-apply image smoothing setting after resize
+		
+		// High-DPI: scale canvas buffer by devicePixelRatio for crisp rendering
+		dpr = window.devicePixelRatio || 1;
+		canvasWidth = rect.width;
+		canvasHeight = rect.height;
+		canvas.width = Math.round(rect.width * dpr);
+		canvas.height = Math.round(rect.height * dpr);
+		
+		// Re-apply image smoothing setting after resize (resize resets context state)
 		if (ctx) {
 			ctx.imageSmoothingEnabled = false;
 		}
@@ -1498,8 +1509,8 @@
 		if (positions.size > 0) {
 			fitAllInView(false, true);
 		} else {
-			offsetX = canvas.width / 2;
-			offsetY = canvas.height / 2;
+			offsetX = canvasWidth / 2;
+			offsetY = canvasHeight / 2;
 			targetOffsetX = offsetX;
 			targetOffsetY = offsetY;
 			targetScale = scale;
@@ -1515,15 +1526,15 @@
 		const boundsWidth = bounds.maxX - bounds.minX + padding;
 		const boundsHeight = bounds.maxY - bounds.minY + padding;
 		
-		const scaleX = canvas.width / boundsWidth;
-		const scaleY = canvas.height / boundsHeight;
+		const scaleX = canvasWidth / boundsWidth;
+		const scaleY = canvasHeight / boundsHeight;
 		
 		return Math.min(scaleX, scaleY, 1) * 0.9; // 0.9 to leave some margin
 	}
 
 	// Determine if we're on a mobile device (small screen)
 	function isMobileView(): boolean {
-		return canvas && canvas.width < 768;
+		return canvas && canvasWidth < 768;
 	}
 
 	// Fit all drawings in the viewport
@@ -1549,8 +1560,8 @@
 		}
 		
 		targetScale = finalScale;
-		targetOffsetX = canvas.width / 2 - centerX * finalScale;
-		targetOffsetY = canvas.height / 2 - centerY * finalScale;
+		targetOffsetX = canvasWidth / 2 - centerX * finalScale;
+		targetOffsetY = canvasHeight / 2 - centerY * finalScale;
 		
 		if (!animate) {
 			// Snap immediately for initial load
@@ -1612,7 +1623,7 @@
 		
 		// Calculate visible world X range
 		const worldLeftX = (0 - offsetX) / scale;
-		const worldRightX = (canvas.width - offsetX) / scale;
+		const worldRightX = (canvasWidth - offsetX) / scale;
 		
 		// Draw main axis line
 		ctx.save();
@@ -1620,7 +1631,7 @@
 		ctx.lineWidth = 1;
 		ctx.beginPath();
 		ctx.moveTo(0, axisScreenY);
-		ctx.lineTo(canvas.width, axisScreenY);
+		ctx.lineTo(canvasWidth, axisScreenY);
 		ctx.stroke();
 		
 		// Calculate tick interval based on zoom level
@@ -1667,7 +1678,7 @@
 			const screenX = worldX * scale + offsetX;
 			
 			// Skip if off screen
-			if (screenX < -50 || screenX > canvas.width + 50) continue;
+			if (screenX < -50 || screenX > canvasWidth + 50) continue;
 			
 			// Draw tick mark
 			ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
@@ -1684,7 +1695,7 @@
 		// Draw "Now" label at the right edge if visible
 		const nowWorldX = ((maxTime - minTime) / timeRange - 0.5) * spreadFactor;
 		const nowScreenX = nowWorldX * scale + offsetX;
-		if (nowScreenX >= -50 && nowScreenX <= canvas.width + 50) {
+		if (nowScreenX >= -50 && nowScreenX <= canvasWidth + 50) {
 			ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
 			ctx.font = 'bold 11px system-ui, -apple-system, sans-serif';
 			ctx.fillText('Now', nowScreenX, axisScreenY + 8);
@@ -1703,12 +1714,13 @@
 	function render() {
 		if (!ctx) return;
 
+		// Apply DPR scaling so all coordinates work in CSS pixels
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		ctx.imageSmoothingEnabled = false;
+
 		// Clear canvas with white background
 		ctx.fillStyle = '#fff';
-		ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-		// Ensure crisp scaling
-		ctx.imageSmoothingEnabled = false;
+		ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
 		// Draw timeline axis first (behind drawings)
 		renderTimelineAxis();
@@ -1722,9 +1734,9 @@
 			const size = DRAWING_SIZE * scale;
 			if (
 				screenX + size < 0 ||
-				screenX - size > canvas.width ||
+				screenX - size > canvasWidth ||
 				screenY + size < 0 ||
-				screenY - size > canvas.height
+				screenY - size > canvasHeight
 			) {
 				continue;
 			}
@@ -1782,7 +1794,7 @@
 		const y = (Math.round(screenY) - halfSize) | 0;
 		
 		// Skip if off-screen
-		if (x + drawSize < 0 || x > canvas.width || y + drawSize < 0 || y > canvas.height) {
+		if (x + drawSize < 0 || x > canvasWidth || y + drawSize < 0 || y > canvasHeight) {
 			return;
 		}
 		
