@@ -1299,7 +1299,7 @@
 		
 		.toolbar-group.create-panel.active {
 			max-width: 100%;
-			max-height: 55dvh;
+			max-height: none;
 			padding: 0.5rem;
 			gap: 0.5rem;
 		}
@@ -1818,14 +1818,14 @@
 			height: auto;
 		}
 
-		/* Grid fills remaining space, stays square */
+		/* Grid: takes remaining width after palette, stays square */
 		.create-grid-wrapper {
-			order: 1; /* Right side */
-			flex: 1;
+			order: 1;
+			flex: 1 1 0;
+			min-width: 0;
 			width: auto;
 			height: auto;
 			aspect-ratio: 1;
-			max-height: calc(55dvh - 7rem);
 		}
 
 		.create-name-input {
