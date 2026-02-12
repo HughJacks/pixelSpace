@@ -1009,7 +1009,7 @@
 		const offsetXDiff = targetOffsetX - offsetX;
 		const offsetYDiff = targetOffsetY - offsetY;
 
-		if (Math.abs(scaleDiff) > 0.001 || Math.abs(offsetXDiff) > 0.5 || Math.abs(offsetYDiff) > 0.5) {
+		if (Math.abs(scaleDiff) > 0.0001 || Math.abs(offsetXDiff) > 0.05 || Math.abs(offsetYDiff) > 0.05) {
 			scale += scaleDiff * ZOOM_SMOOTHING;
 			offsetX += offsetXDiff * ZOOM_SMOOTHING;
 			offsetY += offsetYDiff * ZOOM_SMOOTHING;
@@ -1787,11 +1787,10 @@
 		const screenX = previewPosition.x * scale + offsetX;
 		const screenY = previewPosition.y * scale + offsetY;
 		const size = DRAWING_SIZE * scale;
-		// Use consistent integer math to avoid sub-pixel rendering artifacts
-		const drawSize = Math.round(size);
-		const halfSize = (drawSize / 2) | 0;
-		const x = (Math.round(screenX) - halfSize) | 0;
-		const y = (Math.round(screenY) - halfSize) | 0;
+		const drawSize = size;
+		const halfSize = drawSize / 2;
+		const x = screenX - halfSize;
+		const y = screenY - halfSize;
 		
 		// Skip if off-screen
 		if (x + drawSize < 0 || x > canvasWidth || y + drawSize < 0 || y > canvasHeight) {
@@ -1908,11 +1907,13 @@
 	function renderDrawing(drawing: DrawingWithPosition, screenX: number, screenY: number, size: number) {
 		if (!ctx) return;
 
-		// Use consistent integer math to avoid sub-pixel rendering artifacts
-		const drawSize = Math.round(size);
-		const halfSize = (drawSize / 2) | 0; // Integer division
-		const x = (Math.round(screenX) - halfSize) | 0;
-		const y = (Math.round(screenY) - halfSize) | 0;
+		// Use floating-point positions for smooth panning/zooming.
+		// The DPR-scaled canvas buffer provides enough physical pixels
+		// for sub-pixel CSS coordinates to render without visible artifacts.
+		const drawSize = size;
+		const halfSize = drawSize / 2;
+		const x = screenX - halfSize;
+		const y = screenY - halfSize;
 		
 		// Get opacity for this drawing (default to 1 if not in intro animation)
 		let opacity = drawingOpacities.get(drawing.id) ?? 1;

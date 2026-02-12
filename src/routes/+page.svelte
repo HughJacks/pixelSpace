@@ -634,7 +634,7 @@
 
 		<!-- Create mode panel -->
 		<div class="toolbar-group create-panel" class:active={showCreate}>
-			<!-- Top area: palette + grid (side by side on mobile, stacked on desktop) -->
+			<!-- Top area: palette + grid (palette left, grid right) -->
 			<div class="create-top-area">
 				<div class="create-palette-col">
 					<div class="create-palette">
@@ -707,19 +707,19 @@
 					class="toggle-btn"
 					class:active={clusterWeightColor}
 					onclick={() => toggleWeight('color')}
-					title="Color similarity"
+					data-tooltip="Color similarity"
 				>C</button>
 				<button 
 					class="toggle-btn"
 					class:active={clusterWeightShape}
 					onclick={() => toggleWeight('shape')}
-					title="Shape similarity"
+					data-tooltip="Shape similarity"
 				>S</button>
 				<button 
 					class="toggle-btn"
 					class:active={clusterWeightStyle}
 					onclick={() => toggleWeight('style')}
-					title="Style similarity"
+					data-tooltip="Style similarity"
 				>T</button>
 			</div>
 			
@@ -739,7 +739,7 @@
 					onpointerdown={(e) => handleDialPointerDown('neighbors', e)}
 					onpointermove={handleDialPointerMove}
 					onpointerup={handleDialPointerUp}
-					title="Neighbors: {clusterNeighbors}"
+					data-tooltip="Neighbors: {clusterNeighbors}"
 				>
 					<div class="dial-knob" style="transform: rotate({getDialRotation('neighbors')}deg)">
 						<div class="dial-indicator"></div>
@@ -758,7 +758,7 @@
 					onpointerdown={(e) => handleDialPointerDown('spread', e)}
 					onpointermove={handleDialPointerMove}
 					onpointerup={handleDialPointerUp}
-					title="Spread: {clusterSpread.toFixed(2)}"
+					data-tooltip="Spread: {clusterSpread.toFixed(2)}"
 				>
 					<div class="dial-knob" style="transform: rotate({getDialRotation('spread')}deg)">
 						<div class="dial-indicator"></div>
@@ -777,7 +777,7 @@
 					onpointerdown={(e) => handleDialPointerDown('quality', e)}
 					onpointermove={handleDialPointerMove}
 					onpointerup={handleDialPointerUp}
-					title="Quality: {clusterQuality}"
+					data-tooltip="Quality: {clusterQuality}"
 				>
 					<div class="dial-knob" style="transform: rotate({getDialRotation('quality')}deg)">
 						<div class="dial-indicator"></div>
@@ -795,7 +795,7 @@
 					class:active={clusterMode === 'cluster'}
 					onclick={() => switchMode('cluster')}
 					disabled={isComputing || isAnimating}
-					title="Cluster view"
+					data-tooltip="Cluster view"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<circle cx="5" cy="5" r="2" fill="currentColor"/>
@@ -808,7 +808,7 @@
 					class:active={clusterMode === 'timeline'}
 					onclick={() => switchMode('timeline')}
 					disabled={isComputing || isAnimating}
-					title="Timeline view"
+					data-tooltip="Timeline view"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -826,16 +826,15 @@
 				class="toolbar-btn recalc-btn"
 				onclick={handleRecluster}
 				disabled={isComputing || isAnimating || drawings.length === 0}
-				title="Recalculate"
+				data-tooltip="Recalculate"
 			>
 				{#if isComputing || isAnimating}
 					<svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="spinning">
 						<path d="M9 2v3M9 13v3M2 9h3M13 9h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 					</svg>
 				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M3.5 9A5.5 5.5 0 1 0 9 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-						<path d="M9 1v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+						<path d="M1.90321 7.29677C1.90321 10.341 4.11041 12.4147 6.58893 12.8439C6.87255 12.893 7.06266 13.1627 7.01355 13.4464C6.96444 13.73 6.69471 13.9201 6.41109 13.871C3.49942 13.3668 0.86084 10.9127 0.86084 7.29677C0.860839 5.76009 1.55996 4.55245 2.37639 3.63377C2.96124 2.97568 3.63034 2.44135 4.16846 2.03202L2.53205 2.03202C2.25591 2.03202 2.03205 1.80816 2.03205 1.53202C2.03205 1.25588 2.25591 1.03202 2.53205 1.03202L5.53205 1.03202C5.80819 1.03202 6.03205 1.25588 6.03205 1.53202L6.03205 4.53202C6.03205 4.80816 5.80819 5.03202 5.53205 5.03202C5.25591 5.03202 5.03205 4.80816 5.03205 4.53202L5.03205 2.68645L5.03054 2.68759L5.03045 2.68766L5.03044 2.68767L5.03043 2.68767C4.45896 3.11868 3.76059 3.64538 3.15554 4.3262C2.44102 5.13021 1.90321 6.10154 1.90321 7.29677ZM13.0109 7.70321C13.0109 4.69115 10.8505 2.6296 8.40384 2.17029C8.12093 2.11718 7.93465 1.84479 7.98776 1.56188C8.04087 1.27898 8.31326 1.0927 8.59616 1.14581C11.4704 1.68541 14.0532 4.12605 14.0532 7.70321C14.0532 9.23988 13.3541 10.4475 12.5377 11.3662C11.9528 12.0243 11.2837 12.5586 10.7456 12.968L12.3821 12.968C12.6582 12.968 12.8821 13.1918 12.8821 13.468C12.8821 13.7441 12.6582 13.968 12.3821 13.968L9.38205 13.968C9.10591 13.968 8.88205 13.7441 8.88205 13.468L8.88205 10.468C8.88205 10.1918 9.10591 9.96796 9.38205 9.96796C9.65819 9.96796 9.88205 10.1918 9.88205 10.468L9.88205 12.3135L9.88362 12.3123C10.4551 11.8813 11.1535 11.3546 11.7585 10.6738C12.4731 9.86976 13.0109 8.89844 13.0109 7.70321Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"/>
 					</svg>
 				{/if}
 			</button>
@@ -845,6 +844,7 @@
 				class="toolbar-btn"
 				onclick={() => (showTunePanel = false)}
 				aria-label="Close clustering panel"
+				data-tooltip="Close"
 			>
 				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
 					<path d="M13 5L5 13M5 5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -1025,6 +1025,33 @@
 		max-width: 500px;
 		opacity: 1;
 		pointer-events: auto;
+	}
+
+	/* Compact tooltips for tune panel buttons */
+	.toolbar-group.tune-buttons [data-tooltip] {
+		position: relative;
+	}
+	.toolbar-group.tune-buttons [data-tooltip]::after {
+		content: attr(data-tooltip);
+		position: absolute;
+		bottom: calc(100% + 6px);
+		left: 50%;
+		transform: translateX(-50%);
+		padding: 3px 6px;
+		font-size: 10px;
+		line-height: 1.2;
+		white-space: nowrap;
+		background: #222;
+		color: #fff;
+		border-radius: 4px;
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.15s ease;
+		z-index: 1000;
+	}
+	.toolbar-group.tune-buttons [data-tooltip]:hover::after,
+	.toolbar-group.tune-buttons [data-tooltip]:focus-visible::after {
+		opacity: 1;
 	}
 
 	/* Create panel - column layout with canvas */
@@ -1658,23 +1685,25 @@
 		cursor: not-allowed;
 	}
 
-	/* Top area: grid + palette (stacked on desktop, side-by-side on mobile) */
+	/* Top area: palette left, grid right (same layout on all sizes) */
 	.create-top-area {
 		display: flex;
-		flex-direction: column;
-		align-items: center;
+		flex-direction: row;
+		align-items: flex-start;
 		gap: 0.25rem;
 		width: 100%;
 	}
 
-	/* Palette column wrapper (row on desktop, column on mobile) */
+	/* Palette column wrapper - always on the left */
 	.create-palette-col {
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		gap: 0.125rem;
-		width: 100%;
+		width: auto;
 		justify-content: center;
-		order: 1; /* Below grid on desktop */
+		order: 0;
+		align-self: stretch;
 	}
 
 	/* Create panel bottom row with name input and buttons */
@@ -1712,10 +1741,12 @@
 	.create-grid-wrapper {
 		padding: 1px;
 		background: #333;
-		/* Size: as wide as the screen allows, capped to keep total panel ~50vh */
-		/* Desktop override (min-width: 768px) sets a fixed 220px below */
-		width: min(calc(100vw - 2.5rem), calc(50dvh - 7.5rem));
-		height: min(calc(100vw - 2.5rem), calc(50dvh - 7.5rem));
+		order: 1;
+		flex: 1 1 0;
+		min-width: 0;
+		width: auto;
+		height: auto;
+		aspect-ratio: 1;
 	}
 
 	.create-grid {
@@ -1738,13 +1769,16 @@
 
 	.create-palette {
 		display: flex;
-		align-items: center;
-		gap: 3px;
+		flex-direction: column;
+		justify-content: space-between;
+		height: 100%;
+		gap: 0;
 	}
 
 	.create-color-swatch {
 		width: 24px;
-		height: 24px;
+		flex: 1;
+		height: auto;
 		border: 1px solid #333;
 		cursor: pointer;
 		transition: all 0.15s ease;
@@ -1785,47 +1819,10 @@
 		border: 1px solid #330000;
 	}
 
-	/* Mobile create panel overrides - must come after defaults to win cascade */
+	/* Mobile create panel overrides - larger touch targets */
 	@media (max-width: 768px) {
-		/* Side-by-side layout: palette left, grid right - top edges aligned */
-		.create-top-area {
-			flex-direction: row;
-			align-items: flex-start;
-			gap: 0.25rem;
-		}
-
-		.create-palette-col {
-			flex-direction: column;
-			align-items: center;
-			order: 0; /* Left side */
-			width: auto;
-			/* Match grid height: palette stretches to fill */
-			align-self: stretch;
-		}
-
-		/* 1-column color grid on mobile, fills height of grid */
-		.create-palette {
-			display: flex;
-			flex-direction: column;
-			justify-content: space-between;
-			height: 100%;
-			gap: 0;
-		}
-
 		.create-color-swatch {
 			width: 30px;
-			flex: 1;
-			height: auto;
-		}
-
-		/* Grid: takes remaining width after palette, stays square */
-		.create-grid-wrapper {
-			order: 1;
-			flex: 1 1 0;
-			min-width: 0;
-			width: auto;
-			height: auto;
-			aspect-ratio: 1;
 		}
 
 		.create-name-input {
@@ -1856,7 +1853,7 @@
 
 	@media (min-width: 768px) {
 		.toolbar-group.create-panel.active {
-			max-width: 260px;
+			max-width: 280px;
 			gap: 0.5rem;
 			padding: 0.375rem;
 		}
@@ -1866,17 +1863,9 @@
 			font-size: 0.7rem;
 		}
 
-		.create-grid-wrapper {
-			width: 220px;
-			height: 220px;
-		}
-
 		.create-color-swatch {
 			width: 22px;
-			height: 22px;
 		}
-
-	
 	}
 </style>
 
