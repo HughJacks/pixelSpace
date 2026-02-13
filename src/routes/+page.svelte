@@ -1522,8 +1522,10 @@
 	.stats-bar {
 		position: fixed;
 		top: 0.5rem;
-		left: 50%;
-		transform: translateX(-50%);
+		left: 0;
+		right: 0;
+		margin-inline: auto;
+		width: max-content;
 		display: flex;
 		flex-wrap: nowrap;
 		align-items: center;
@@ -1605,12 +1607,12 @@
 		from {
 			opacity: 0;
 			max-width: 0;
-			transform: translateX(-50%) translateY(-5px);
+			transform: translateY(-5px);
 		}
 		to {
 			opacity: 1;
 			max-width: min(90vw, 320px);
-			transform: translateX(-50%) translateY(0);
+			transform: translateY(0);
 		}
 	}
 
