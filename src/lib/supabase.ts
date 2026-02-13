@@ -127,6 +127,48 @@ async function getLatestCachedTimestamp(): Promise<string | null> {
 // Network fetch timeout - fail fast instead of waiting for browser default (~60s)
 const FETCH_TIMEOUT_MS = 10_000;
 
+// How often to do a full sync (replace cache with server state) to pick up deletions
+const FULL_SYNC_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const LAST_FULL_SYNC_KEY = 'pixelspace-last-full-sync';
+
+function shouldDoFullSync(): boolean {
+	try {
+		const last = localStorage.getItem(LAST_FULL_SYNC_KEY);
+		if (!last) return true;
+		const lastMs = parseInt(last, 10);
+		if (Number.isNaN(lastMs)) return true;
+		return Date.now() - lastMs >= FULL_SYNC_INTERVAL_MS;
+	} catch {
+		return true;
+	}
+}
+
+function markFullSyncDone(): void {
+	try {
+		localStorage.setItem(LAST_FULL_SYNC_KEY, String(Date.now()));
+	} catch {
+		// ignore
+	}
+}
+
+async function replaceCacheWithDrawings(drawings: Drawing[]): Promise<void> {
+	try {
+		const db = await openDB();
+		const transaction = db.transaction(STORE_NAME, 'readwrite');
+		const store = transaction.objectStore(STORE_NAME);
+		store.clear();
+		for (const drawing of drawings) {
+			store.put(drawing);
+		}
+		await new Promise<void>((resolve, reject) => {
+			transaction.oncomplete = () => resolve();
+			transaction.onerror = () => reject(transaction.error);
+		});
+	} catch (error) {
+		console.warn('[Cache] Failed to replace cache:', error);
+	}
+}
+
 // Fetch all drawings with caching.
 // If onCacheReady is provided, it will be called as soon as cached drawings are
 // available (before the network request completes), so the UI can show them instantly.
@@ -146,10 +188,11 @@ export async function getAllDrawings(
 		onCacheReady(cachedDrawings);
 	}
 
-	// Step 2: Get the latest timestamp we have cached
+	// Step 2: Decide whether to do incremental fetch or full sync
+	const doFullSync = shouldDoFullSync();
 	const latestTimestamp = await getLatestCachedTimestamp();
 
-	// Step 3: Fetch only new drawings from server (with timeout)
+	// Step 3: Fetch from server (with timeout)
 	const fetchStart = performance.now();
 	try {
 		const controller = new AbortController();
@@ -157,7 +200,9 @@ export async function getAllDrawings(
 
 		let query = supabase.from('drawings').select('*').order('created_at', { ascending: false });
 
-		if (latestTimestamp && cachedDrawings.length > 0) {
+		if (doFullSync) {
+			console.log('[Load] Full sync: fetching all drawings (removes deleted from cache)');
+		} else if (latestTimestamp && cachedDrawings.length > 0) {
 			// Fetch only drawings created after our latest cached one
 			console.log(`[Load] Fetching drawings newer than ${latestTimestamp}`);
 			query = query.gt('created_at', latestTimestamp);
@@ -171,22 +216,33 @@ export async function getAllDrawings(
 		if (error) throw error;
 
 		const fetchTime = performance.now() - fetchStart;
-		console.log(`[Load] Server fetch: ${records?.length ?? 0} new drawings in ${fetchTime.toFixed(1)}ms`);
+		const serverDrawings: Drawing[] = (records ?? []).map((record: DrawingRow) => rowToDrawing(record));
+		console.log(`[Load] Server fetch: ${serverDrawings.length} drawings in ${fetchTime.toFixed(1)}ms`);
 
-		const newDrawings: Drawing[] = (records ?? []).map((record: DrawingRow) => rowToDrawing(record));
-
-		// Step 4: Cache new drawings
-		if (newDrawings.length > 0) {
+		// Step 4: Update cache
+		if (doFullSync) {
 			const cacheWriteStart = performance.now();
-			await cacheDrawings(newDrawings);
+			await replaceCacheWithDrawings(serverDrawings);
+			markFullSyncDone();
 			console.log(
-				`[Load] Cache write: ${newDrawings.length} drawings in ${(performance.now() - cacheWriteStart).toFixed(1)}ms`
+				`[Load] Full sync: replaced cache with ${serverDrawings.length} drawings in ${(performance.now() - cacheWriteStart).toFixed(1)}ms`
+			);
+			const totalTime = performance.now() - totalStart;
+			console.log(`[Load] Total: ${serverDrawings.length} drawings in ${totalTime.toFixed(1)}ms`);
+			return serverDrawings;
+		}
+
+		// Incremental: cache new drawings only
+		if (serverDrawings.length > 0) {
+			const cacheWriteStart = performance.now();
+			await cacheDrawings(serverDrawings);
+			console.log(
+				`[Load] Cache write: ${serverDrawings.length} drawings in ${(performance.now() - cacheWriteStart).toFixed(1)}ms`
 			);
 		}
 
 		// Step 5: Merge and return
-		const allDrawings = [...newDrawings, ...cachedDrawings];
-		// Dedupe by id (in case of any overlap)
+		const allDrawings = [...serverDrawings, ...cachedDrawings];
 		const seen = new Set<string>();
 		const deduped = allDrawings.filter((d) => {
 			if (seen.has(d.id)) return false;
