@@ -198,6 +198,18 @@
 	// Online now (from Supabase Presence)
 	let onlineCount = $state<number | null>(null);
 
+	// +1 popup when new drawing or user added in realtime
+	let plusOneCount = $state(0);
+	let plusOneTimeout: ReturnType<typeof setTimeout> | null = null;
+	function triggerPlusOne() {
+		plusOneCount++;
+		if (plusOneTimeout) clearTimeout(plusOneTimeout);
+		plusOneTimeout = setTimeout(() => {
+			plusOneCount = 0;
+			plusOneTimeout = null;
+		}, 2500);
+	}
+
 	// Format relative time
 	function formatRelativeTime(dateString: string): string {
 		const date = new Date(dateString);
@@ -291,13 +303,19 @@
 		}
 
 		// Fetch drawings - show cached data instantly, then merge server data
+		// IMPORTANT: Merge (don't replace) so realtime additions aren't lost when fetch resolves
 		getAllDrawings((cachedData) => {
 				// Cache is ready - show drawings immediately
 				drawings = cachedData;
 				isLoading = false;
 			})
 			.then((data) => {
-				drawings = data;
+				// Merge server data with current drawings - preserve any added via realtime
+				const byId = new Map(data.map((d) => [d.id, d]));
+				for (const d of drawings) {
+					if (!byId.has(d.id)) byId.set(d.id, d);
+				}
+				drawings = [...byId.values()].sort((a, b) => b.created.localeCompare(a.created));
 			})
 			.catch((error) => {
 				console.error('Failed to load drawings:', error);
@@ -308,23 +326,40 @@
 
 		// Subscribe to real-time updates
 		const unsubscribe = subscribeToDrawings((newDrawing) => {
-			drawings = [newDrawing, ...drawings];
-			
-			// Clear saved preview after a short delay to let GalleryCanvas
-			// place the real drawing first (avoiding a flash of empty space)
-			if (savedPreviewActive) {
-				setTimeout(() => {
-					savedPreviewActive = false;
-					savedPreviewPixels = [];
-					pendingNewDrawingPosition = null;
-				}, 300);
+			try {
+				const isNew = !drawings.some((d) => d.id === newDrawing.id);
+				if (isNew) {
+					drawings = [newDrawing, ...drawings];
+					triggerPlusOne(); // New drawing from another user (or realtime before optimistic add)
+				}
+
+				// Clear saved preview after a short delay to let GalleryCanvas
+				// place the real drawing first (avoiding a flash of empty space)
+				if (savedPreviewActive) {
+					setTimeout(() => {
+						savedPreviewActive = false;
+						savedPreviewPixels = [];
+						pendingNewDrawingPosition = null;
+					}, 300);
+				}
+			} catch (e) {
+				console.error('[Realtime] Error in drawings callback:', e);
 			}
 		});
 
 		// Subscribe to presence for online count (use stored username or anonymous id)
 		const presenceId = storedUsername || 'guest-' + crypto.randomUUID().slice(0, 8);
+		let prevOnlineCount: number | null = null;
 		const unsubscribePresence = subscribeToPresence(presenceId, (count) => {
-			onlineCount = count;
+			try {
+				if (prevOnlineCount !== null && count > prevOnlineCount) {
+					triggerPlusOne(); // New user came online
+				}
+				prevOnlineCount = count;
+				onlineCount = count;
+			} catch (e) {
+				console.error('[Realtime] Error in presence callback:', e);
+			}
 		});
 
 	// Add keyboard listener
@@ -490,10 +525,16 @@
 			});
 
 			if (result) {
+				// Add our drawing immediately so it appears without refresh
+				// (realtime subscription will dedupe if it fires later)
+				drawings = [result, ...drawings];
 				// Keep the drawing visible at full opacity by storing it as saved preview
 				savedPreviewPixels = [...createPixels];
 				savedPreviewActive = true;
-				
+
+				// Show +1 when user creates their own drawing
+				triggerPlusOne();
+
 				// Close create panel and reset for next time
 				showCreate = false;
 				createPixels = getDefaultPixels();
@@ -912,7 +953,10 @@
 		</svg>
 	</button>
 
-	<div class="stats-bar" class:fade-in={introAnimationDone} class:hidden={showCreate} class:recent-info={recentMode}>
+	<div class="stats-bar" class:fade-in={introAnimationDone} class:recent-info={recentMode}>
+		{#if plusOneCount > 0}
+			<span class="plus-one">+{plusOneCount}</span>
+		{/if}
 		{#if recentMode && highlightedDrawing}
 			<span class="drawing-title">{highlightedDrawing.name}</span>
 			<span class="stat-dot"></span>
@@ -1490,18 +1534,22 @@
 		background: #000;
 		padding: 0.25rem 0.5rem;
 		border: 1px solid #333;
-		transition: all 0.2s ease;
+		overflow: hidden;
+		white-space: nowrap;
+		transition: max-width 0.3s ease, opacity 0.2s ease, padding 0.2s ease;
 	}
 
 	.stats-bar.fade-in {
-		animation: fadeInDown 0.3s ease-out forwards;
+		animation: fadeInDown 0.4s ease-out forwards;
 		animation-delay: 0.1s;
+		max-width: min(90vw, 320px);
 	}
 
 	.stats-bar.recent-info {
 		padding: 0.375rem 0.625rem;
 		background: #000;
 		border: 1px solid #444;
+		max-width: min(90vw, 520px);
 	}
 
 	.stat {
@@ -1529,13 +1577,34 @@
 		flex-shrink: 0;
 	}
 
+	.plus-one {
+		font-size: 0.65rem;
+		font-weight: 600;
+		color: #4ade80;
+		animation: plusOnePop 0.25s ease-out;
+		margin-right: 0.25rem;
+	}
+
+	@keyframes plusOnePop {
+		from {
+			opacity: 0;
+			transform: scale(0.8) translateY(2px);
+		}
+		to {
+			opacity: 1;
+			transform: scale(1) translateY(0);
+		}
+	}
+
 	@keyframes fadeInDown {
 		from {
 			opacity: 0;
+			max-width: 0;
 			transform: translateX(-50%) translateY(-5px);
 		}
 		to {
 			opacity: 1;
+			max-width: min(90vw, 320px);
 			transform: translateX(-50%) translateY(0);
 		}
 	}

@@ -462,6 +462,10 @@
 	let isAnimatingPositions = $state(false);
 	let positionAnimationProgress = 0;
 	let oldPositions: Map<string, { x: number; y: number }> = new Map();
+	
+	// Snapshot of drawings sent to the UMAP worker, so the done handler can
+	// correctly map embeddings back even if drawings change mid-computation.
+	let umapDrawingSnapshot: Drawing[] = [];
 
 	// Intro animation state
 	let isFirstLoad = true;
@@ -1200,95 +1204,101 @@
 			} else if (data.type === 'progress') {
 				progress = ((data.iteration || 0) / (data.totalIterations || 1)) * 100;
 			} else if (data.type === 'done' && data.embeddings) {
-				// Handle async operations in an IIFE
-				(async () => {
-					const embeddings = data.embeddings!;
-					const currentDrawings = untrack(() => drawings);
-					const currentMode = untrack(() => visualizationMode);
-					
-					// Store embeddings for mode switching
-					lastEmbeddings = embeddings;
-					lastDrawingIds = currentDrawings.map(d => d.id);
-					
-					// Also update the tracked IDs set for new drawing detection
-					trackedDrawingIds = new Set(currentDrawings.map(d => d.id));
-					lastDrawingsLength = currentDrawings.length;
-					
-					// Compute positions based on current visualization mode
-					const newPositions = computePositionsForMode(currentDrawings, embeddings, currentMode);
+				perfLog('UMAP done handler start', { embeddings: data.embeddings.length });
+				const embeddings = data.embeddings!;
+				// Use the snapshot of drawings that were actually sent to UMAP,
+				// NOT the current drawings (which may have changed during computation).
+				// This prevents index mismatches between embeddings[i] and drawings[i]
+				// when new drawings arrive mid-computation.
+				const umapDrawings = umapDrawingSnapshot;
+				const currentMode = untrack(() => visualizationMode);
+				
+				// Store embeddings for mode switching
+				lastEmbeddings = embeddings;
+				lastDrawingIds = umapDrawings.map(d => d.id);
+				
+				// Update tracked IDs based on UMAP snapshot, NOT current drawings.
+				// This ensures any drawings that arrived during UMAP computation
+				// will be detected as new and projected via k-NN when the effect re-runs.
+				trackedDrawingIds = new Set(umapDrawings.map(d => d.id));
+				lastDrawingsLength = umapDrawings.length;
+				
+				// Compute positions using UMAP drawings (matching embeddings indices)
+				const newPositions = computePositionsForMode(umapDrawings, embeddings, currentMode);
 
-					isComputing = false;
-					progress = 100;
-					
-					// Calculate bounds of all drawings
-					let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
-					for (const pos of newPositions.values()) {
-						bMinX = Math.min(bMinX, pos.x);
-						bMaxX = Math.max(bMaxX, pos.x);
-						bMinY = Math.min(bMinY, pos.y);
-						bMaxY = Math.max(bMaxY, pos.y);
-					}
-					bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
-					
-					// Notify parent of computed positions (for sharing with preview mode)
-					if (onPositionsComputed) {
-						onPositionsComputed(newPositions);
-					}
-					
-					// Pre-cache all drawing images for fast rendering
-					await cacheAllDrawingImages(currentDrawings);
-					
-					// Check if this is the first load
-					if (isFirstLoad && positions.size === 0) {
-						isFirstLoad = false;
-						// Skip intro animation in preview mode - just show clustered positions
-						if (previewMode) {
-							positions = newPositions;
-							introComplete = true;
-							// Set full opacity for all drawings
-							const fullOpacities = new Map<string, number>();
-							for (const drawing of currentDrawings) {
-								fullOpacities.set(drawing.id, 1);
-							}
-							drawingOpacities = fullOpacities;
-							fitAllInView(false, true);
-							markGallerySeen();
-						} else if (shouldShowIntroAnimation()) {
-							// Start intro animation: fade in drawings at final positions
-							const drawingIds = currentDrawings.map(d => d.id);
-							startIntroAnimation(drawingIds, newPositions);
-						} else {
-							// Skip intro - show clustered positions immediately
-							positions = newPositions;
-							introComplete = true;
-							// Set full opacity for all drawings
-							const fullOpacities = new Map<string, number>();
-							for (const drawing of currentDrawings) {
-								fullOpacities.set(drawing.id, 1);
-							}
-							drawingOpacities = fullOpacities;
-							fitAllInView(false, true);
-							markGallerySeen();
-						}
-					} else if (positions.size > 0) {
-						// Store old positions and start animation to new positions (reclustering)
-						oldPositions = new Map(positions);
-						targetPositions = newPositions;
-						startPositionAnimation();
-						
-						// Zoom out and center to show all images after reclustering
-						// Use a slight delay so the animation starts smoothly
-						setTimeout(() => {
-							fitAllInView(true, true); // animate=true, maxZoomOut=true
-						}, POSITION_ANIMATION_DURATION * 0.2);
-					} else {
-						// Fallback - set positions directly and fit view
+				isComputing = false;
+				progress = 100;
+				
+				// Calculate bounds of all drawings
+				let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+				for (const pos of newPositions.values()) {
+					bMinX = Math.min(bMinX, pos.x);
+					bMaxX = Math.max(bMaxX, pos.x);
+					bMinY = Math.min(bMinY, pos.y);
+					bMaxY = Math.max(bMaxY, pos.y);
+				}
+				bounds = { minX: bMinX, maxX: bMaxX, minY: bMinY, maxY: bMaxY };
+				
+				// Notify parent of computed positions (for sharing with preview mode)
+				if (onPositionsComputed) {
+					onPositionsComputed(newPositions);
+				}
+				
+				// Pre-cache drawing images (fire-and-forget to avoid race conditions
+				// where the reactive effect fires during the await and starts a
+				// duplicate UMAP run or misses new drawings)
+				cacheAllDrawingImages(umapDrawings).then(() => scheduleRender());
+				
+				// Check if this is the first load
+				if (isFirstLoad && positions.size === 0) {
+					isFirstLoad = false;
+					// Skip intro animation in preview mode - just show clustered positions
+					if (previewMode) {
 						positions = newPositions;
-						fitAllInView(false, true);
 						introComplete = true;
+						// Set full opacity for all drawings
+						const fullOpacities = new Map<string, number>();
+						for (const drawing of umapDrawings) {
+							fullOpacities.set(drawing.id, 1);
+						}
+						drawingOpacities = fullOpacities;
+						fitAllInView(false, true);
+						markGallerySeen();
+					} else if (shouldShowIntroAnimation()) {
+						// Start intro animation: fade in drawings at final positions
+						const drawingIds = umapDrawings.map(d => d.id);
+						startIntroAnimation(drawingIds, newPositions);
+					} else {
+						// Skip intro - show clustered positions immediately
+						positions = newPositions;
+						introComplete = true;
+						// Set full opacity for all drawings
+						const fullOpacities = new Map<string, number>();
+						for (const drawing of umapDrawings) {
+							fullOpacities.set(drawing.id, 1);
+						}
+						drawingOpacities = fullOpacities;
+						fitAllInView(false, true);
 						markGallerySeen();
 					}
-				})();
+				} else if (positions.size > 0) {
+					// Store old positions and start animation to new positions (reclustering)
+					oldPositions = new Map(positions);
+					targetPositions = newPositions;
+					startPositionAnimation();
+					
+					// Zoom out and center to show all images after reclustering
+					// Use a slight delay so the animation starts smoothly
+					setTimeout(() => {
+						fitAllInView(true, true); // animate=true, maxZoomOut=true
+					}, POSITION_ANIMATION_DURATION * 0.2);
+				} else {
+					// Fallback - set positions directly and fit view
+					positions = newPositions;
+					fitAllInView(false, true);
+					introComplete = true;
+					markGallerySeen();
+				}
 			}
 		};
 
@@ -1305,7 +1315,19 @@
 	// Max realtime drawings to add via k-NN projection without full UMAP recalculation
 	const MAX_REALTIME_ADDITIONS_WITHOUT_UMAP = 5;
 	
+	// Performance logging: enable via ?perf=1 in URL, or window.__pixelspace_perf = true in console
+	const DEBUG_PERF = typeof window !== 'undefined' && (
+		new URLSearchParams(globalThis.location?.search ?? '').get('perf') === '1' ||
+		(window as unknown as { __pixelspace_perf?: boolean }).__pixelspace_perf
+	);
+	function perfLog(msg: string, extra?: Record<string, unknown>) {
+		if (DEBUG_PERF) {
+			console.log(`[GalleryPerf] ${msg}`, { ...extra, t: performance.now().toFixed(1) });
+		}
+	}
+	
 	$effect(() => {
+		const effectStart = DEBUG_PERF ? performance.now() : 0;
 		const currentLength = drawings.length;
 		const currentIds = new Set(drawings.map(d => d.id));
 		// Read pendingNewDrawingPosition to track it as a dependency
@@ -1313,6 +1335,7 @@
 		
 		// In preview mode with shared positions, use those instead of computing
 		if (previewMode && sharedPositions && sharedPositions.size > 0) {
+			perfLog('path: previewMode+sharedPositions');
 			if (positions.size === 0) {
 				positions = new Map(sharedPositions);
 				introComplete = true;
@@ -1330,6 +1353,7 @@
 		
 		// Check if a new drawing was added and we have a pending position for it (user's own creation)
 		if (currentLength === lastDrawingsLength + 1 && pendingPosition && positions.size > 0) {
+			perfLog('path: pendingPosition (own creation)');
 			// Find the new drawing (not in trackedDrawingIds)
 			const newDrawing = drawings.find(d => !trackedDrawingIds.has(d.id));
 			if (newDrawing) {
@@ -1362,36 +1386,60 @@
 
 		// Realtime drawings: project into existing space via k-NN (no UMAP recalculation)
 		// Limited batch size to avoid layout drift; beyond limit we fall through to full UMAP
+		// Defer k-NN to queueMicrotask to avoid blocking the main thread (feature extraction is CPU-heavy)
 		const newCount = currentLength - lastDrawingsLength;
 		if (newCount > 0 && newCount <= MAX_REALTIME_ADDITIONS_WITHOUT_UMAP && positions.size > 0 && !previewMode) {
 			const newDrawings = drawings.filter(d => !trackedDrawingIds.has(d.id));
 			if (newDrawings.length === newCount) {
-				let allProjected = true;
-				const newPositions = new Map(positions);
-				const newOpacities = new Map(drawingOpacities);
+				perfLog('path: k-NN projection (deferred)', { newCount, totalDrawings: currentLength });
+				queueMicrotask(() => {
+					const knnStart = DEBUG_PERF ? performance.now() : 0;
+					try {
+						let allProjected = true;
+						const newPositions = new Map(positions);
+						const newOpacities = new Map(drawingOpacities);
 
-				for (const drawing of newDrawings) {
-					const pos = computePreviewPosition([...drawing.pixels]);
-					if (!pos) {
-						allProjected = false;
-						break;
-					}
-					newPositions.set(drawing.id, { ...pos });
-					newOpacities.set(drawing.id, 1);
-					getDrawingImage(drawing);
-				}
+						for (const drawing of newDrawings) {
+							if (!drawing?.pixels || !Array.isArray(drawing.pixels)) {
+								allProjected = false;
+								break;
+							}
+							const pos = computePreviewPosition([...drawing.pixels]);
+							if (!pos) {
+								allProjected = false;
+								break;
+							}
+							newPositions.set(drawing.id, { ...pos });
+							newOpacities.set(drawing.id, 1);
+							getDrawingImage(drawing);
+						}
 
-				if (allProjected) {
-					positions = newPositions;
-					drawingOpacities = newOpacities;
-					lastDrawingsLength = currentLength;
-					trackedDrawingIds = currentIds;
-					if (onPositionsComputed) {
-						onPositionsComputed(positions);
+						if (allProjected) {
+							positions = newPositions;
+							drawingOpacities = newOpacities;
+							lastDrawingsLength = currentLength;
+							trackedDrawingIds = currentIds;
+							if (onPositionsComputed) {
+								onPositionsComputed(positions);
+							}
+							scheduleRender();
+							if (DEBUG_PERF) {
+								perfLog('k-NN done', { ms: (performance.now() - knnStart).toFixed(1) });
+							}
+						} else {
+							// Some drawings couldn't be projected - fall back to full UMAP
+							lastDrawingsLength = currentLength;
+							trackedDrawingIds = currentIds;
+							untrack(() => runUMAP());
+						}
+					} catch (e) {
+						console.warn('[GalleryCanvas] Realtime k-NN projection failed, falling through to UMAP:', e);
+						lastDrawingsLength = currentLength;
+						trackedDrawingIds = currentIds;
+						untrack(() => runUMAP());
 					}
-					scheduleRender();
-					return; // Skip UMAP recalculation
-				}
+				});
+				return; // Skip UMAP - k-NN will run in microtask
 			}
 		}
 		
@@ -1402,10 +1450,15 @@
 		// 4. Drawings count has changed (prevents re-running on same data)
 		// 5. Not in preview mode (preview should use shared positions)
 		if (currentLength > 0 && worker && !isComputing && currentLength !== lastDrawingsLength && !previewMode) {
+			perfLog('path: UMAP run', { currentLength, lastDrawingsLength });
 			lastDrawingsLength = currentLength;
 			trackedDrawingIds = currentIds;
 			// Use untrack to read drawings without creating deep dependencies
 			untrack(() => runUMAP());
+		}
+		
+		if (DEBUG_PERF) {
+			perfLog('effect exit (no-op or UMAP scheduled)', { ms: (performance.now() - effectStart).toFixed(1) });
 		}
 	});
 
@@ -1477,10 +1530,17 @@
 	});
 
 	function runUMAP(useCustomParams = false) {
+		const umapStart = DEBUG_PERF ? performance.now() : 0;
 		// Read drawings without creating reactive dependencies
 		const currentDrawings = untrack(() => drawings);
 
 		if (!worker || currentDrawings.length === 0) return;
+
+		perfLog('runUMAP start', { count: currentDrawings.length });
+
+		// Save snapshot so the done handler can map embeddings to the correct
+		// drawings, even if the drawings array changes during computation.
+		umapDrawingSnapshot = currentDrawings;
 
 		isComputing = true;
 		progress = 0;
@@ -2001,8 +2061,15 @@
 		const mouseCanvasX = event.clientX - rect.left;
 		const mouseCanvasY = event.clientY - rect.top;
 
-		// Zoom toward cursor - set target values for smooth animation
-		const zoomFactor = event.deltaY > 0 ? 0.95 : 1.05;
+		// Zoom toward cursor - deltaY-proportional so trackpads (many tiny deltas)
+		// and mouse wheels (fewer large deltas) both feel natural.
+		// deltaMode 1 = line units (some mice), convert to ~pixel equivalent.
+		let normalizedDelta = event.deltaY;
+		if (event.deltaMode === 1) normalizedDelta *= 30;
+		// pow(0.998, delta): small trackpad scrolls → subtle zoom, mouse clicks → snappy zoom
+		// Clamped to ±12% per event to prevent huge jumps from momentum scrolling.
+		const rawFactor = Math.pow(0.998, normalizedDelta);
+		const zoomFactor = Math.max(0.88, Math.min(1.12, rawFactor));
 		const minScale = Math.min(getMinScaleForBounds(), 1);
 		const newScale = Math.max(minScale, Math.min(5, targetScale * zoomFactor));
 

@@ -241,10 +241,25 @@ export function subscribeToDrawings(callback: (drawing: Drawing) => void): () =>
 				table: 'drawings'
 			},
 			(payload) => {
-				const drawing = rowToDrawing(payload.new as DrawingRow);
-				// Cache the new drawing
-				cacheDrawings([drawing]);
-				callback(drawing);
+				try {
+					console.log('[Realtime] Received INSERT event', payload?.new?.id);
+					const row = payload?.new;
+					if (!row || typeof row !== 'object') {
+						console.warn('[Realtime] Invalid payload, skipping');
+						return;
+					}
+					const drawing = rowToDrawing(row as DrawingRow);
+					// Validate drawing has required fields
+					if (!drawing.id || !Array.isArray(drawing.pixels)) {
+						console.warn('[Realtime] Invalid drawing shape, skipping');
+						return;
+					}
+					// Cache the new drawing (fire-and-forget, don't block callback)
+					cacheDrawings([drawing]).catch((e) => console.warn('[Realtime] Cache write failed:', e));
+					callback(drawing);
+				} catch (e) {
+					console.error('[Realtime] Error processing drawing:', e);
+				}
 			}
 		)
 		.subscribe((status, err) => {
@@ -269,32 +284,64 @@ interface PresencePayload {
 
 // Subscribe to presence for online user count.
 // Callback receives the number of users currently online.
+// Debounced to avoid rapid state updates that can cause performance issues.
 export function subscribeToPresence(
 	userId: string,
 	onOnlineCount: (count: number) => void
 ): () => void {
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let lastCount = -1;
+
 	const channel = supabase
 		.channel('pixelspace-online')
 		.on('presence', { event: 'sync' }, () => {
-			const state = channel.presenceState<PresencePayload>();
-			const uniqueUsers = new Set(
-				Object.values(state)
-					.flat()
-					.map((p) => p.user_id)
-			);
-			onOnlineCount(uniqueUsers.size);
+			try {
+				const state = channel.presenceState<PresencePayload>() ?? {};
+				const uniqueUsers = new Set(
+					Object.values(state)
+						.flat()
+						.filter((p): p is PresencePayload => p != null && typeof p === 'object')
+						.map((p) => p.user_id)
+				);
+				const count = uniqueUsers.size;
+				if (count === lastCount) return; // Skip redundant updates
+				lastCount = count;
+
+				// Debounce: presence sync can fire very frequently
+				if (debounceTimer) clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(() => {
+					debounceTimer = null;
+					onOnlineCount(count);
+				}, 200);
+			} catch (e) {
+				console.warn('[Realtime] Presence sync error:', e);
+			}
 		})
 		.subscribe(async (status) => {
 			if (status === 'SUBSCRIBED') {
-				await channel.track({
-					user_id: userId,
-					online_at: new Date().toISOString()
-				});
+				try {
+					await channel.track({
+						user_id: userId,
+						online_at: new Date().toISOString()
+					});
+				} catch (e) {
+					console.warn('[Realtime] Presence track error:', e);
+				}
 			}
 		});
 
+	// Return unsubscribe - always remove channel; untrack can fail or hang
+	let cleaned = false;
 	return () => {
-		channel.untrack().then(() => supabase.removeChannel(channel));
+		if (cleaned) return;
+		cleaned = true;
+		if (debounceTimer) clearTimeout(debounceTimer);
+		channel
+			.untrack()
+			.catch(() => {})
+			.finally(() => {
+				supabase.removeChannel(channel);
+			});
 	};
 }
 
