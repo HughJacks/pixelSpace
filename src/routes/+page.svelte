@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import GalleryCanvas from '$lib/components/GalleryCanvas.svelte';
-	import { getAllDrawings, subscribeToDrawings, createDrawing } from '$lib/supabase';
+	import { getAllDrawings, subscribeToDrawings, subscribeToPresence, createDrawing } from '$lib/supabase';
 	import type { Drawing } from '$lib/types';
 	import { PALETTE, GRID_SIZE, COLOR_WHITE, colorToHex, getDefaultPixels } from '$lib/palette';
 
@@ -195,6 +195,9 @@
 	// Count unique users
 	let uniqueUserCount = $derived(new Set(drawings.map(d => d.creator)).size);
 
+	// Online now (from Supabase Presence)
+	let onlineCount = $state<number | null>(null);
+
 	// Format relative time
 	function formatRelativeTime(dateString: string): string {
 		const date = new Date(dateString);
@@ -318,6 +321,12 @@
 			}
 		});
 
+		// Subscribe to presence for online count (use stored username or anonymous id)
+		const presenceId = storedUsername || 'guest-' + crypto.randomUUID().slice(0, 8);
+		const unsubscribePresence = subscribeToPresence(presenceId, (count) => {
+			onlineCount = count;
+		});
+
 	// Add keyboard listener
 	window.addEventListener('keydown', handleKeydown);
 
@@ -332,6 +341,7 @@
 
 	return () => {
 		unsubscribe();
+		unsubscribePresence();
 		window.removeEventListener('keydown', handleKeydown);
 		window.removeEventListener('resize', handleResize);
 	};
@@ -915,6 +925,10 @@
 			<span class="stat">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
 			<span class="stat-dot"></span>
 			<span class="stat">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
+			{#if onlineCount !== null}
+				<span class="stat-dot"></span>
+				<span class="stat">{onlineCount} online now</span>
+			{/if}
 		{/if}
 	</div>
 
@@ -1731,7 +1745,8 @@
 	}
 
 	.create-name-input::placeholder {
-		color: #666;
+		color: #fff;
+		opacity: 0.6;
 	}
 
 	.create-name-input.has-error {

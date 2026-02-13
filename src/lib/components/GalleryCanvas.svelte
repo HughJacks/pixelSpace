@@ -1301,6 +1301,9 @@
 	// to avoid creating deep reactive dependencies on every pixel value
 	let lastDrawingsLength = 0;
 	let trackedDrawingIds = new Set<string>();
+
+	// Max realtime drawings to add via k-NN projection without full UMAP recalculation
+	const MAX_REALTIME_ADDITIONS_WITHOUT_UMAP = 5;
 	
 	$effect(() => {
 		const currentLength = drawings.length;
@@ -1325,7 +1328,7 @@
 			return;
 		}
 		
-		// Check if a new drawing was added and we have a pending position for it
+		// Check if a new drawing was added and we have a pending position for it (user's own creation)
 		if (currentLength === lastDrawingsLength + 1 && pendingPosition && positions.size > 0) {
 			// Find the new drawing (not in trackedDrawingIds)
 			const newDrawing = drawings.find(d => !trackedDrawingIds.has(d.id));
@@ -1354,6 +1357,41 @@
 				
 				scheduleRender();
 				return; // Skip UMAP recalculation
+			}
+		}
+
+		// Realtime drawings: project into existing space via k-NN (no UMAP recalculation)
+		// Limited batch size to avoid layout drift; beyond limit we fall through to full UMAP
+		const newCount = currentLength - lastDrawingsLength;
+		if (newCount > 0 && newCount <= MAX_REALTIME_ADDITIONS_WITHOUT_UMAP && positions.size > 0 && !previewMode) {
+			const newDrawings = drawings.filter(d => !trackedDrawingIds.has(d.id));
+			if (newDrawings.length === newCount) {
+				let allProjected = true;
+				const newPositions = new Map(positions);
+				const newOpacities = new Map(drawingOpacities);
+
+				for (const drawing of newDrawings) {
+					const pos = computePreviewPosition([...drawing.pixels]);
+					if (!pos) {
+						allProjected = false;
+						break;
+					}
+					newPositions.set(drawing.id, { ...pos });
+					newOpacities.set(drawing.id, 1);
+					getDrawingImage(drawing);
+				}
+
+				if (allProjected) {
+					positions = newPositions;
+					drawingOpacities = newOpacities;
+					lastDrawingsLength = currentLength;
+					trackedDrawingIds = currentIds;
+					if (onPositionsComputed) {
+						onPositionsComputed(positions);
+					}
+					scheduleRender();
+					return; // Skip UMAP recalculation
+				}
 			}
 		}
 		

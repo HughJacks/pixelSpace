@@ -261,6 +261,43 @@ export function subscribeToDrawings(callback: (drawing: Drawing) => void): () =>
 	};
 }
 
+// Presence payload type
+interface PresencePayload {
+	user_id: string;
+	online_at: string;
+}
+
+// Subscribe to presence for online user count.
+// Callback receives the number of users currently online.
+export function subscribeToPresence(
+	userId: string,
+	onOnlineCount: (count: number) => void
+): () => void {
+	const channel = supabase
+		.channel('pixelspace-online')
+		.on('presence', { event: 'sync' }, () => {
+			const state = channel.presenceState<PresencePayload>();
+			const uniqueUsers = new Set(
+				Object.values(state)
+					.flat()
+					.map((p) => p.user_id)
+			);
+			onOnlineCount(uniqueUsers.size);
+		})
+		.subscribe(async (status) => {
+			if (status === 'SUBSCRIBED') {
+				await channel.track({
+					user_id: userId,
+					online_at: new Date().toISOString()
+				});
+			}
+		});
+
+	return () => {
+		channel.untrack().then(() => supabase.removeChannel(channel));
+	};
+}
+
 // Clear the cache (useful for debugging)
 export async function clearDrawingsCache(): Promise<void> {
 	try {
