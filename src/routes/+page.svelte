@@ -1525,6 +1525,7 @@
 		left: 50%;
 		transform: translateX(-50%);
 		display: flex;
+		flex-wrap: nowrap;
 		align-items: center;
 		gap: 0.5rem;
 		color: #fff;
@@ -1554,12 +1555,15 @@
 
 	.stat {
 		font-weight: 500;
+		flex-shrink: 0;
 	}
 
 	.drawing-title {
 		font-weight: 600;
 		color: #fff;
 		max-width: 200px;
+		min-width: 0;
+		flex-shrink: 1;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1583,6 +1587,7 @@
 		color: #4ade80;
 		animation: plusOnePop 0.25s ease-out;
 		margin-right: 0.25rem;
+		flex-shrink: 0;
 	}
 
 	@keyframes plusOnePop {
