@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import GalleryCanvas from '$lib/components/GalleryCanvas.svelte';
 	import { getAllDrawings, subscribeToDrawings, subscribeToPresence, createDrawing } from '$lib/supabase';
-	import type { Drawing } from '$lib/types';
+	import { type Drawing, DRAWING_NAME_MAX_LENGTH } from '$lib/types';
 	import { PALETTE, GRID_SIZE, COLOR_WHITE, colorToHex, getDefaultPixels } from '$lib/palette';
+	import { setFaviconFromPixels, resetFavicon } from '$lib/drawing-svg';
 
 	let username = $state('');
 	let showUsernameModal = $state(false);
@@ -194,6 +195,19 @@
 
 	// Count unique users
 	let uniqueUserCount = $derived(new Set(drawings.map(d => d.creator)).size);
+
+	// Favicon: pick a random drawing on each page load/refresh
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		if (isLoading || sortedDrawings.length === 0) {
+			resetFavicon();
+			return;
+		}
+		const list = [...sortedDrawings];
+		const chosen = list[Math.floor(Math.random() * list.length)];
+		setFaviconFromPixels(chosen.pixels);
+		return () => resetFavicon();
+	});
 
 	// Online now (from Supabase Presence)
 	let onlineCount = $state<number | null>(null);
@@ -730,7 +744,7 @@
 					class="create-name-input"
 					placeholder="Name..."
 					bind:value={createName}
-					maxlength={50}
+					maxlength={DRAWING_NAME_MAX_LENGTH}
 					class:has-error={createError && !createName.trim()}
 				/>
 				<button class="toolbar-btn" onclick={cancelCreate} aria-label="Cancel">
@@ -1563,7 +1577,8 @@
 	.drawing-title {
 		font-weight: 600;
 		color: #fff;
-		max-width: 200px;
+		/* On larger screens, only truncate when name would make bar absurdly long */
+		max-width: 280px;
 		min-width: 0;
 		flex-shrink: 1;
 		white-space: nowrap;
@@ -1616,6 +1631,13 @@
 		}
 	}
 
+	@media (min-width: 769px) {
+		/* Desktop: show full name unless it would make the bar ridiculously long */
+		.stats-bar.recent-info .drawing-title {
+			max-width: 360px;
+		}
+	}
+
 	@media (max-width: 768px) {
 		.stats-bar {
 			font-size: 0.65rem;
@@ -1631,7 +1653,7 @@
 		}
 
 		.stats-bar.recent-info .drawing-title {
-			max-width: none;
+			max-width: 140px;
 			flex-shrink: 1;
 			min-width: 0;
 		}

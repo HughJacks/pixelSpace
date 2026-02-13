@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Drawing } from './types';
+import { DRAWING_NAME_MAX_LENGTH } from './types';
 
 // Supabase client singleton
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -266,10 +267,14 @@ export async function getAllDrawings(
 // Create a new drawing
 export async function createDrawing(data: CreateDrawingData): Promise<Drawing | null> {
 	try {
+		const trimmedName = data.name.trim();
+		if (!trimmedName || trimmedName.length > DRAWING_NAME_MAX_LENGTH) {
+			return null;
+		}
 		const { data: record, error } = await supabase
 			.from('drawings')
 			.insert({
-				name: data.name,
+				name: trimmedName,
 				creator: data.creator,
 				pixels: data.pixels
 			})

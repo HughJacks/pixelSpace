@@ -2,7 +2,7 @@
 	import PixelEditor from './PixelEditor.svelte';
 	import GalleryCanvas from './GalleryCanvas.svelte';
 	import { createDrawing } from '$lib/supabase';
-	import type { Drawing } from '$lib/types';
+	import { type Drawing, DRAWING_NAME_MAX_LENGTH } from '$lib/types';
 
 	interface Props {
 		drawings: Drawing[];
@@ -103,7 +103,7 @@
 					type="text"
 					placeholder="Name your creation..."
 					bind:value={drawingName}
-					maxlength={50}
+					maxlength={DRAWING_NAME_MAX_LENGTH}
 					class:has-error={error && !drawingName.trim()}
 				/>
 			</div>

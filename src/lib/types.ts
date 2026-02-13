@@ -1,5 +1,7 @@
 // TypeScript types for PixelSpace
 
+export const DRAWING_NAME_MAX_LENGTH = 40;
+
 export interface Drawing {
 	id: string;
 	name: string;
