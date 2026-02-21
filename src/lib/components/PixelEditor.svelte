@@ -16,6 +16,9 @@
 	let gridContainer: HTMLDivElement;
 	let lastPixelX = -1;
 	let lastPixelY = -1;
+	let tapStartX = -1;
+	let tapStartY = -1;
+	let tapStartColor: number | null = null;
 
 	// Convert flat array to 2D grid for easier rendering (color indices)
 	let grid = $derived.by(() => {
@@ -75,7 +78,6 @@
 		
 		lastPixelX = pixel.x;
 		lastPixelY = pixel.y;
-		
 		setPixel(pixel.x, pixel.y, isErasing ? COLOR_WHITE : selectedColorIndex);
 	}
 
@@ -85,6 +87,19 @@
 		isErasing = event.button === 2;
 		lastPixelX = -1;
 		lastPixelY = -1;
+		
+		const pixel = getPixelFromPoint(event.clientX, event.clientY);
+		if (pixel) {
+			tapStartX = pixel.x;
+			tapStartY = pixel.y;
+			// Store color BEFORE we draw (so we know if pixel already had our color)
+			const idx = pixel.y * GRID_SIZE + pixel.x;
+			tapStartColor = pixels[idx] ?? COLOR_WHITE;
+		} else {
+			tapStartX = -1;
+			tapStartY = -1;
+			tapStartColor = null;
+		}
 		
 		// Capture pointer for smooth dragging
 		gridContainer.setPointerCapture(event.pointerId);
@@ -104,13 +119,13 @@
 	function handlePointerUp(event: PointerEvent) {
 		if (isDrawing) {
 			gridContainer.releasePointerCapture(event.pointerId);
-			// Notify parent that drawing ended
 			onDrawEnd?.();
 		}
 		isDrawing = false;
 		isErasing = false;
 		lastPixelX = -1;
 		lastPixelY = -1;
+		// Don't reset tapStart - click handler needs it
 	}
 
 	function clearCanvas() {
@@ -120,11 +135,22 @@
 	function handleContextMenu(event: MouseEvent) {
 		event.preventDefault();
 	}
+
+	function handleClick() {
+		// Click (not drag) on same-color pixel = erase
+		if (tapStartX >= 0 && tapStartY >= 0 && tapStartColor !== null && tapStartColor === selectedColorIndex && !isErasing) {
+			setPixel(tapStartX, tapStartY, COLOR_WHITE);
+		}
+		tapStartX = -1;
+		tapStartY = -1;
+		tapStartColor = null;
+	}
+
 </script>
 
-<div class="pixel-editor">
-	<div class="palette-bar">
-		<div class="color-swatches">
+<div class="pixel-editor" data-testid="pixel-editor">
+	<div class="palette-bar" role="toolbar" aria-label="Drawing tools" data-testid="palette-bar">
+		<div class="color-swatches" role="radiogroup" aria-label="Color palette" data-testid="color-swatches">
 			{#each PALETTE as color, index}
 				<button
 					class="color-swatch"
@@ -132,10 +158,15 @@
 					style="background-color: {colorToHex(color)}"
 					onclick={() => (selectedColorIndex = index)}
 					title={color.name}
+					role="radio"
+					aria-checked={selectedColorIndex === index}
+					aria-label="Select {color.name} color"
+					data-testid="color-swatch-{color.name.toLowerCase()}"
+					data-color-index={index}
 				></button>
 			{/each}
 		</div>
-		<button class="tool-btn" onclick={clearCanvas} title="Clear Canvas">
+		<button class="tool-btn" onclick={clearCanvas} title="Clear Canvas" data-testid="clear-canvas" aria-label="Clear canvas">
 			Clear
 		</button>
 	</div>
@@ -149,7 +180,12 @@
 			onpointerup={handlePointerUp}
 			onpointercancel={handlePointerUp}
 			onpointerleave={handlePointerUp}
+			onclick={handleClick}
 			oncontextmenu={handleContextMenu}
+			role="grid"
+			aria-label="Pixel drawing canvas, {GRID_SIZE}x{GRID_SIZE}"
+			data-testid="pixel-grid"
+			data-grid-size={GRID_SIZE}
 		>
 			{#each grid as row, y}
 				{#each row as colorIndex, x}
@@ -157,6 +193,10 @@
 						class="pixel"
 						style="background-color: {getPixelColor(colorIndex)}"
 						aria-label="Pixel {x},{y}"
+						data-testid="pixel-{x}-{y}"
+						data-x={x}
+						data-y={y}
+						data-color-index={colorIndex}
 					></div>
 				{/each}
 			{/each}

@@ -2428,12 +2428,12 @@
 
 <svelte:window onresize={resizeCanvas} />
 
-<div class="gallery-container" bind:this={container}>
+<div class="gallery-container" bind:this={container} data-testid="gallery-container">
 	{#if isComputing && !previewMode && positions.size === 0}
-		<div class="loading-overlay">
+		<div class="loading-overlay" role="status" data-testid="gallery-loading">
 			<div class="loading-content">
 				<p class="loading-title">Computing UMAP layout</p>
-				<div class="progress-bar">
+				<div class="progress-bar" role="progressbar" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}>
 					<div class="progress-fill" style="width: {progress}%"></div>
 				</div>
 				<p class="progress-text">{Math.round(progress)}%</p>
@@ -2454,6 +2454,11 @@
 		ontouchmove={handleTouchMove}
 		ontouchend={handleTouchEnd}
 		ontouchcancel={handleTouchEnd}
+		aria-label="Drawing gallery canvas"
+		data-testid="gallery-canvas"
+		data-drawing-count={drawings.length}
+		data-is-computing={isComputing}
+		data-intro-complete={introComplete}
 	></canvas>
 
 	{#if !previewMode}
@@ -2462,7 +2467,7 @@
 
 
 	{#if drawings.length === 0 && !previewMode}
-		<div class="empty-state">
+		<div class="empty-state" data-testid="gallery-empty-state">
 			<p>No drawings yet!</p>
 			<p class="hint">Be the first to create one.</p>
 		</div>

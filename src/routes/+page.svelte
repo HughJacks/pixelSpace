@@ -603,7 +603,7 @@
 
 <div class="page">
 	{#if isLoading}
-		<div class="loading">
+		<div class="loading" role="status" data-testid="page-loading">
 			<p class="loading-title">Loading drawings</p>
 			<div class="progress-bar">
 				<div class="progress-fill indeterminate"></div>
@@ -639,7 +639,7 @@
 	{/if}
 
 	<!-- Unified bottom toolbar -->
-	<div class="toolbar" class:fade-in={introAnimationDone} class:recent-mode={recentMode} class:tune-mode={showTunePanel} class:create-mode={showCreate}>
+	<div class="toolbar" class:fade-in={introAnimationDone} class:recent-mode={recentMode} class:tune-mode={showTunePanel} class:create-mode={showCreate} data-testid="toolbar" data-mode={showCreate ? 'create' : recentMode ? 'recent' : showTunePanel ? 'tune' : 'main'}>
 		<!-- Main mode buttons -->
 		<div class="toolbar-group main-buttons" class:active={!recentMode && !showTunePanel && !showCreate}>
 			<button
@@ -647,6 +647,7 @@
 				onclick={enterRecentMode}
 				aria-label="Browse drawings"
 				disabled={sortedDrawings.length === 0}
+				data-testid="browse-btn"
 			>
 				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
 					<circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.5"/>
@@ -654,7 +655,7 @@
 				</svg>
 			</button>
 
-			<button class="toolbar-btn primary" onclick={handleCreateNew}>
+			<button class="toolbar-btn primary" onclick={handleCreateNew} data-testid="create-btn" aria-label="Create new drawing">
 				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
 					<path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
 				</svg>
@@ -667,6 +668,8 @@
 				class:active={showTunePanel}
 				onclick={() => (showTunePanel = !showTunePanel)}
 				aria-label="Tune visualization"
+				aria-pressed={showTunePanel}
+				data-testid="tune-btn"
 			>
 				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
 					<circle cx="6" cy="5" r="2" stroke="currentColor" stroke-width="1.5"/>
@@ -681,6 +684,7 @@
 				onclick={handleRandomRecluster}
 				disabled={isComputing || isAnimating || drawings.length === 0}
 				aria-label="Shuffle clustering"
+				data-testid="shuffle-btn"
 			>
 				{#if isComputing || isAnimating}
 					<svg width="20" height="20" viewBox="0 0 20 20" fill="none" class="spinning">
@@ -698,11 +702,11 @@
 			</div>
 
 		<!-- Create mode panel -->
-		<div class="toolbar-group create-panel" class:active={showCreate}>
+		<div class="toolbar-group create-panel" class:active={showCreate} data-testid="create-panel">
 			<!-- Top area: palette + grid (palette left, grid right) -->
 			<div class="create-top-area">
 				<div class="create-palette-col">
-					<div class="create-palette">
+					<div class="create-palette" role="radiogroup" aria-label="Color palette" data-testid="create-color-palette">
 						{#each PALETTE as color, index}
 							<button
 								class="create-color-swatch"
@@ -710,6 +714,11 @@
 								style="background-color: {colorToHex(color)}"
 								onclick={() => (createSelectedColor = index)}
 								title={color.name}
+								role="radio"
+								aria-checked={createSelectedColor === index}
+								aria-label="Select {color.name} color"
+								data-testid="create-swatch-{color.name.toLowerCase()}"
+								data-color-index={index}
 							></button>
 						{/each}
 					</div>
@@ -724,12 +733,20 @@
 						onpointercancel={handleCreatePointerUp}
 						onpointerleave={handleCreatePointerUp}
 						oncontextmenu={handleCreateContextMenu}
+						role="grid"
+						aria-label="Pixel drawing canvas, {GRID_SIZE}x{GRID_SIZE}"
+						data-testid="create-pixel-grid"
+						data-grid-size={GRID_SIZE}
 					>
 						{#each createGrid as row, y}
 							{#each row as colorIndex, x}
 								<div
 									class="create-pixel"
 									style="background-color: {colorToHex(PALETTE[colorIndex] ?? PALETTE[COLOR_WHITE])}"
+									data-testid="create-pixel-{x}-{y}"
+									data-x={x}
+									data-y={y}
+									data-color-index={colorIndex}
 								></div>
 							{/each}
 						{/each}
@@ -746,13 +763,15 @@
 					bind:value={createName}
 					maxlength={DRAWING_NAME_MAX_LENGTH}
 					class:has-error={createError && !createName.trim()}
+					aria-label="Drawing name"
+					data-testid="create-name-input"
 				/>
-				<button class="toolbar-btn" onclick={cancelCreate} aria-label="Cancel">
+				<button class="toolbar-btn" onclick={cancelCreate} aria-label="Cancel drawing" data-testid="create-cancel-btn">
 					<svg width="18" height="18" viewBox="0 0 20 20" fill="none">
 						<path d="M15 5L5 15M5 5L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
 					</svg>
 				</button>
-				<button class="toolbar-btn primary" onclick={handleSaveDrawing} disabled={isCreating}>
+				<button class="toolbar-btn primary" onclick={handleSaveDrawing} disabled={isCreating} aria-label="Save drawing" data-testid="create-save-btn">
 					<svg width="18" height="18" viewBox="0 0 20 20" fill="none">
 						<path d="M5 10l3 3 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
@@ -760,31 +779,40 @@
 			</div>
 
 			{#if createError}
-				<p class="create-error">{createError}</p>
+				<p class="create-error" role="alert" data-testid="create-error">{createError}</p>
 			{/if}
 		</div>
 
 			<!-- Clustering mode buttons -->
-			<div class="toolbar-group tune-buttons" class:active={showTunePanel && !recentMode}>
+			<div class="toolbar-group tune-buttons" class:active={showTunePanel && !recentMode} data-testid="tune-panel">
 			<!-- Feature toggles -->
-			<div class="toggle-group">
+			<div class="toggle-group" data-testid="feature-toggles">
 				<button 
 					class="toggle-btn"
 					class:active={clusterWeightColor}
 					onclick={() => toggleWeight('color')}
 					data-tooltip="Color similarity"
+					aria-pressed={clusterWeightColor}
+					aria-label="Toggle color similarity"
+					data-testid="toggle-color"
 				>C</button>
 				<button 
 					class="toggle-btn"
 					class:active={clusterWeightShape}
 					onclick={() => toggleWeight('shape')}
 					data-tooltip="Shape similarity"
+					aria-pressed={clusterWeightShape}
+					aria-label="Toggle shape similarity"
+					data-testid="toggle-shape"
 				>S</button>
 				<button 
 					class="toggle-btn"
 					class:active={clusterWeightStyle}
 					onclick={() => toggleWeight('style')}
 					data-tooltip="Style similarity"
+					aria-pressed={clusterWeightStyle}
+					aria-label="Toggle style similarity"
+					data-testid="toggle-style"
 				>T</button>
 			</div>
 			
@@ -854,13 +882,17 @@
 			<div class="toolbar-divider"></div>
 			
 			<!-- Mode toggle -->
-			<div class="mode-toggle-group">
+			<div class="mode-toggle-group" role="radiogroup" aria-label="Visualization mode" data-testid="mode-toggle">
 				<button 
 					class="mode-btn"
 					class:active={clusterMode === 'cluster'}
 					onclick={() => switchMode('cluster')}
 					disabled={isComputing || isAnimating}
 					data-tooltip="Cluster view"
+					role="radio"
+					aria-checked={clusterMode === 'cluster'}
+					aria-label="Cluster view"
+					data-testid="mode-cluster"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<circle cx="5" cy="5" r="2" fill="currentColor"/>
@@ -874,6 +906,10 @@
 					onclick={() => switchMode('timeline')}
 					disabled={isComputing || isAnimating}
 					data-tooltip="Timeline view"
+					role="radio"
+					aria-checked={clusterMode === 'timeline'}
+					aria-label="Timeline view"
+					data-testid="mode-timeline"
 				>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M2 8h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -892,6 +928,8 @@
 				onclick={handleRecluster}
 				disabled={isComputing || isAnimating || drawings.length === 0}
 				data-tooltip="Recalculate"
+				aria-label="Recalculate clustering"
+				data-testid="recluster-btn"
 			>
 				{#if isComputing || isAnimating}
 					<svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="spinning">
@@ -910,6 +948,7 @@
 				onclick={() => (showTunePanel = false)}
 				aria-label="Close clustering panel"
 				data-tooltip="Close"
+				data-testid="tune-close-btn"
 			>
 				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
 					<path d="M13 5L5 13M5 5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -918,12 +957,13 @@
 		</div>
 
 		<!-- Recent mode buttons -->
-		<div class="toolbar-group recent-buttons" class:active={recentMode}>
+		<div class="toolbar-group recent-buttons" class:active={recentMode} data-testid="recent-panel">
 			<button 
 				class="toolbar-btn highlight"
 				onclick={() => {}}
 				aria-label="Recent drawings"
 				title="Recent"
+				data-testid="recent-indicator"
 			>
 				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
 					<circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
@@ -936,6 +976,7 @@
 				onclick={exitRecentMode}
 				aria-label="Exit browse mode"
 				title="Exit"
+				data-testid="recent-exit-btn"
 			>
 				<svg width="20" height="20" viewBox="0 0 20 20" fill="none">
 					<path d="M15 5L5 15M5 5L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -950,6 +991,7 @@
 		class:visible={recentMode && !showCreate && canGoOlder}
 		onclick={goOlder}
 		aria-label="View older drawing"
+		data-testid="nav-older"
 	>
 		<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
 			<path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -961,31 +1003,32 @@
 		class:visible={recentMode && !showCreate && canGoNewer}
 		onclick={goNewer}
 		aria-label="View newer drawing"
+		data-testid="nav-newer"
 	>
 		<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
 			<path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 		</svg>
 	</button>
 
-	<div class="stats-bar" class:fade-in={introAnimationDone} class:recent-info={recentMode}>
+	<div class="stats-bar" class:fade-in={introAnimationDone} class:recent-info={recentMode} data-testid="stats-bar" data-drawing-count={drawings.length} data-recent-mode={recentMode}>
 		{#if plusOneCount > 0}
-			<span class="plus-one">+{plusOneCount}</span>
+			<span class="plus-one" data-testid="plus-one">+{plusOneCount}</span>
 		{/if}
 		{#if recentMode && highlightedDrawing}
-			<span class="drawing-title">{highlightedDrawing.name}</span>
+			<span class="drawing-title" data-testid="recent-drawing-name">{highlightedDrawing.name}</span>
 			<span class="stat-dot"></span>
-			<span class="stat">by {highlightedDrawing.creator}</span>
+			<span class="stat" data-testid="recent-drawing-creator">by {highlightedDrawing.creator}</span>
 			<span class="stat-dot"></span>
-			<span class="stat">{formatRelativeTime(highlightedDrawing.created)}</span>
+			<span class="stat" data-testid="recent-drawing-time">{formatRelativeTime(highlightedDrawing.created)}</span>
 			<span class="stat-dot"></span>
-			<span class="stat counter">{sortedDrawings.length - recentIndex} / {sortedDrawings.length}</span>
+			<span class="stat counter" data-testid="recent-counter">{sortedDrawings.length - recentIndex} / {sortedDrawings.length}</span>
 		{:else}
-			<span class="stat">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
+			<span class="stat" data-testid="stat-drawings">{drawings.length} drawing{drawings.length !== 1 ? 's' : ''}</span>
 			<span class="stat-dot"></span>
-			<span class="stat">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
+			<span class="stat" data-testid="stat-users">{uniqueUserCount} user{uniqueUserCount !== 1 ? 's' : ''}</span>
 			{#if onlineCount !== null}
 				<span class="stat-dot"></span>
-				<span class="stat">{onlineCount} online now</span>
+				<span class="stat" data-testid="stat-online">{onlineCount} online now</span>
 			{/if}
 		{/if}
 	</div>
@@ -993,8 +1036,8 @@
 </div>
 
 {#if showUsernameModal}
-	<div class="modal-overlay" onclick={() => username && (showUsernameModal = false)}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
+	<div class="modal-overlay" onclick={() => username && (showUsernameModal = false)} data-testid="username-modal-overlay" role="dialog" aria-label="Set username">
+		<div class="modal" onclick={(e) => e.stopPropagation()} data-testid="username-modal">
 			<h2>Welcome to PixelSpace</h2>
 			<p>Enter a username to get started</p>
 			<input
@@ -1003,8 +1046,10 @@
 				bind:value={usernameInput}
 				onkeydown={handleUsernameKeydown}
 				maxlength={20}
+				aria-label="Username"
+				data-testid="username-input"
 			/>
-			<button class="btn-primary" onclick={handleSetUsername} disabled={!usernameInput.trim()}>
+			<button class="btn-primary" onclick={handleSetUsername} disabled={!usernameInput.trim()} data-testid="username-submit-btn">
 				Enter the Space
 			</button>
 		</div>

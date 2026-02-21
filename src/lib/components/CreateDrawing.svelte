@@ -73,7 +73,7 @@
 	}
 </script>
 
-<div class="create-overlay">
+<div class="create-overlay" data-testid="create-overlay">
 	<!-- Background canvas showing existing drawings -->
 	<div class="canvas-background" class:active={isDrawing}>
 		{#if drawings.length > 0}
@@ -90,7 +90,7 @@
 		{/if}
 	</div>
 
-	<button class="btn-back" onclick={onCancel} aria-label="Back to gallery">
+	<button class="btn-back" onclick={onCancel} aria-label="Back to gallery" data-testid="back-to-gallery">
 		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M19 12H5M12 19l-7-7 7-7" />
 		</svg>
@@ -105,6 +105,8 @@
 					bind:value={drawingName}
 					maxlength={DRAWING_NAME_MAX_LENGTH}
 					class:has-error={error && !drawingName.trim()}
+					aria-label="Drawing name"
+					data-testid="drawing-name-input"
 				/>
 			</div>
 
@@ -115,23 +117,23 @@
 			/>
 
 			{#if error}
-				<p class="error">{error}</p>
+				<p class="error" role="alert" data-testid="create-error">{error}</p>
 			{/if}
 		</div>
 
 		<div class="footer-row">
 			{#if username}
-				<div class="creator-badge">
+				<div class="creator-badge" data-testid="creator-badge">
 					<span class="avatar">{username[0].toUpperCase()}</span>
 					<span class="username">{username}</span>
 				</div>
 			{/if}
-			<button class="btn-save" onclick={handleSaveClick}>Save Drawing</button>
+			<button class="btn-save" onclick={handleSaveClick} aria-label="Save drawing" data-testid="save-drawing">Save Drawing</button>
 		</div>
 	</main>
 
 	{#if isSaving}
-		<div class="saving-overlay">
+		<div class="saving-overlay" role="status" data-testid="saving-overlay">
 			<div class="saving-content">
 				<div class="spinner"></div>
 				<p>Saving your masterpiece...</p>

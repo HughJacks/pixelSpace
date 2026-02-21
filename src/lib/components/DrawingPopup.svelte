@@ -30,12 +30,14 @@
 		class="popup"
 		style="left: {adjustedX}px; top: {adjustedY}px;"
 		role="tooltip"
+		data-testid="drawing-popup"
+		data-drawing-id={drawing.id}
 	>
-		<span class="name">{drawing.name}</span>
+		<span class="name" data-testid="popup-name">{drawing.name}</span>
 		<span class="separator"></span>
-		<span class="creator">by {drawing.creator}</span>
+		<span class="creator" data-testid="popup-creator">by {drawing.creator}</span>
 		<span class="separator"></span>
-		<span class="date">{formatDate(drawing.created)}</span>
+		<span class="date" data-testid="popup-date">{formatDate(drawing.created)}</span>
 	</div>
 {/if}
 
